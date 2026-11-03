@@ -112,7 +112,23 @@ try {
   const removed = page.waitForResponse(r => r.url().endsWith(`/api/admin/numbers/${pool.id}`) && r.request().method() === 'DELETE'); await page.click(removeSelector); assert.equal((await removed).status(), 200);
   await customer.waitForFunction(id => !Array.from(document.getElementById('account-select').options).some(o => o.value === id), {}, pool.id);
   assert.equal(await customer.$$eval('.chat-item', els => els.length), 0); assert.ok(store.account(legacy.id));
+  await page.type('#admin-new-username', 'quick-created');
+  await page.type('#admin-new-password', 'quick-password-123');
+  await page.click('#admin-create-user-submit');
+  await page.waitForFunction(() => document.getElementById('admin-create-user-notice').textContent.includes('已创建'));
+  await page.waitForFunction(() => Array.from(document.querySelectorAll('#admin-users strong')).some(el => el.textContent === 'quick-created'));
+  assert.equal(await page.$eval('#admin-new-password', el => el.value), '');
+  assert.equal(store.byName('quick-created').role, 'user');
+  await page.type('#admin-new-username', 'quick-created');
+  await page.type('#admin-new-password', 'another-password-123');
+  await page.click('#admin-create-user-submit');
+  await page.waitForFunction(() => document.getElementById('admin-create-user-notice').textContent.includes('已被注册'));
+  assert.equal(await page.$eval('#admin-create-user-submit', el => el.disabled), false);
+  await page.click('#signout');
+  await page.waitForFunction(() => !document.getElementById('auth-screen').hidden);
+  assert.equal(await page.$eval('#admin-new-password', el => el.value), '');
   assert.deepEqual(errors, []);
+  console.log('PASS: administrator creates an ordinary user directly, sees the refreshed list and duplicate error; password clears on success and logout.');
   console.log('PASS: admin custom quota/provision/assign/reclaim UI loads no message streams; customers keep legacy numbers, cannot add numbers, and lose reclaimed chat access immediately.');
 } finally {
   await browser?.close(); if (service.exitCode === null) { const exited = once(service, 'exit'); service.kill('SIGTERM'); await exited; }

@@ -35,6 +35,36 @@ function client(base) {
 const credentials = username => ({ username, password: 'strong-test-password-123' });
 const grant = (plan, enabled = true, expiresAt = new Date(Date.now() + 86400000).toISOString()) => ({ plan, enabled, expiresAt });
 
+test('only administrators can create ordinary users without changing their own session', async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'blue-admin-create-'));
+  const service = await launch(dataDir);
+  try {
+    const admin = client(service.base), anonymous = client(service.base), user = client(service.base);
+    const body = { username: 'Quick-User', password: 'quick-password-123', role: 'admin', enabled: true, plan: 'vip' };
+    assert.equal((await anonymous.request('/api/admin/users', { method: 'POST', body })).status, 401);
+    await admin.request('/api/auth/login', { method: 'POST', body: { username: 'test-admin', password: 'test-password-123' } });
+    const cookie = admin.getCookie();
+    const created = await admin.request('/api/admin/users', { method: 'POST', body });
+    assert.equal(created.status, 201);
+    const result = (await created.json()).user;
+    assert.equal(result.username, 'quick-user');
+    assert.equal(result.role, 'user');
+    assert.equal(result.active, false);
+    assert.equal(result.enabled, false);
+    assert.equal(result.password_hash, undefined);
+    assert.equal(admin.getCookie(), cookie);
+    assert.equal((await (await admin.request('/api/auth/me')).json()).user.role, 'admin');
+    assert.equal((await admin.request('/api/admin/users', { method: 'POST', body })).status, 409);
+    for (const invalid of [{ username: 'bad', password: body.password }, { username: 'bad-password', password: '12345' }]) {
+      assert.equal((await admin.request('/api/admin/users', { method: 'POST', body: invalid })).status, 400);
+    }
+    assert.equal((await user.request('/api/auth/login', { method: 'POST', body })).status, 200);
+    assert.equal((await user.request('/api/admin/users', { method: 'POST', body: credentials('forbidden-user') })).status, 403);
+    const listing = await (await admin.request('/api/admin/users')).json();
+    assert.ok(listing.users.some(entry => entry.id === result.id));
+  } finally { await service.stop(); await rm(dataDir, { recursive: true, force: true }); }
+});
+
 test('multi-tenant registration, admin grants, account quotas, isolation, revocation and persistence', { timeout: 30000 }, async () => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'blue-api-'));
   let service = await launch(dataDir);

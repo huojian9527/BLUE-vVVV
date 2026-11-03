@@ -168,6 +168,11 @@ app.patch('/api/admin/numbers/:id/assignment', async (req, res) => {
   } finally { rt.handover = false; }
 });
 app.get('/api/admin/users', (req, res) => res.json({ users: store.users(), plans, audit: store.audit() }));
+app.post('/api/admin/users', async (req, res) => {
+  rate(`create-user-admin:${req.user.id}`, 60, 900000);
+  const user = await store.createUser(req.body?.username, req.body?.password);
+  res.status(201).json({ user: store.publicUser(user) });
+});
 app.patch('/api/admin/users/:id', (req, res) => {
   const user = store.grant(req.user.id, req.params.id, req.body);
   reconcile();

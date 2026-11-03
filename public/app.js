@@ -15,6 +15,7 @@ function showAuth() {
   const hadIdentity = Boolean(me);
   resetChatExtras(); soundEnabled = false; $('notification-sound').textContent = '开启声音'; $('notification-sound').setAttribute('aria-pressed', 'false');
   authEpoch++; clearAttachment(); closePasswordDialog();
+  $('admin-create-user-form').reset(); $('admin-create-user-notice').textContent = '';
   closeStream(); accountsRequest++; creatingAccount = false; me = null; accounts = []; selectedAccount = ''; selectedThread = ''; draftPhone = ''; messages = []; connected = false; connectionStatus = 'idle';
   $('self-number').hidden = true; $('self-number').textContent = '';
   $('account-select').replaceChildren(); $('account-select').disabled = false; $('status').textContent = '未连接'; $('status').classList.remove('online'); $('account').textContent = ''; $('connection-hint').textContent = '点击连接生成二维码'; $('send').disabled = true;
@@ -458,6 +459,24 @@ $('nav-chat').onclick = () => showPage('chat');
 $('nav-flows').onclick = () => { if (!selectedAccount && me?.role !== 'admin') return notice('请先选择可用号码，再配置自动回复'); showPage('flows'); };
 $('nav-admin').onclick = () => showPage('admin');
 function localDate(iso) { const d = new Date(iso); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); }
+$('admin-create-user-form').onsubmit = async event => {
+  event.preventDefault();
+  if (me?.role !== 'admin' || $('admin-create-user-submit').disabled) return;
+  const epoch = authEpoch;
+  $('admin-create-user-submit').disabled = true;
+  $('admin-create-user-notice').textContent = '';
+  try {
+    const result = await api('/api/admin/users', { method: 'POST', body: JSON.stringify({ username: $('admin-new-username').value, password: $('admin-new-password').value }) });
+    if (epoch !== authEpoch) return;
+    $('admin-create-user-form').reset();
+    $('admin-create-user-notice').textContent = `账号 ${result.user.username} 已创建，请在下方开通使用权限并设置有效期。`;
+    await loadAdmin();
+  } catch (error) {
+    if (epoch === authEpoch) $('admin-create-user-notice').textContent = error.message;
+  } finally {
+    $('admin-create-user-submit').disabled = false;
+  }
+};
 async function loadAdmin() {
   const epoch = authEpoch;
   try {
