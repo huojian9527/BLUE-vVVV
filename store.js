@@ -110,8 +110,10 @@ export class Store {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return this.publicUser(this.user(id));
   }
-  async changePassword(actor, id, password, reset = false) {
-    if (this.user(actor)?.role !== 'admin') fail(403, '仅超级管理员可修改密码');
+  async changePassword(actor, id, password, reset = false, currentPassword) {
+    if (currentPassword !== undefined) {
+      if (actor !== id || !await passwordMatches(currentPassword, this.user(id)?.password_hash || '')) fail(403, '当前密码错误');
+    } else if (this.user(actor)?.role !== 'admin') fail(403, '仅超级管理员可修改密码');
     if (!this.user(id)) fail(404, '用户不存在');
     const hash = await passwordHash(password);
     this.db.exec('BEGIN IMMEDIATE');

@@ -393,3 +393,30 @@ test('admin exports image-bearing templates and imports into a different server 
     assert.equal((await receiver.request(`/api/admin/templates/${template.id}/export`)).status, 200);
   } finally { await source.stop(); await target.stop(); await rm(sourceDir, { recursive: true }); await rm(targetDir, { recursive: true }); }
 });
+
+
+test('users and administrators change their own password, revoke sessions and retain it after restart', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-own-password-'));
+  let service = await launch(dir);
+  try {
+    const anonymous = client(service.base);
+    assert.equal((await anonymous.request('/api/auth/password', { method: 'POST', body: { currentPassword: 'x', password: '123456' } })).status, 401);
+    await anonymous.request('/api/auth/register', { method: 'POST', body: credentials('password-user') });
+    for (const username of ['password-user', 'test-admin']) {
+      const oldPassword = username === 'test-admin' ? 'test-password-123' : credentials(username).password;
+      const user = client(service.base), other = client(service.base);
+      for (const c of [user, other]) assert.equal((await c.request('/api/auth/login', { method: 'POST', body: { username, password: oldPassword } })).status, 200);
+      assert.equal((await user.request('/api/auth/password', { method: 'POST', body: { password: 'changed-password-123' } })).status, 400);
+      assert.equal((await user.request('/api/auth/password', { method: 'POST', body: { currentPassword: 'wrong', password: 'changed-password-123' } })).status, 403);
+      assert.equal((await user.request('/api/auth/password', { method: 'POST', body: { currentPassword: oldPassword, password: 'short' } })).status, 400);
+      assert.equal((await user.request('/api/auth/password', { method: 'POST', body: { currentPassword: oldPassword, password: 'changed-password-123', userId: 'someone-else' } })).status, 200);
+      for (const c of [user, other]) assert.equal((await c.request('/api/auth/me')).status, 401);
+      assert.equal((await user.request('/api/auth/login', { method: 'POST', body: { username, password: oldPassword } })).status, 401);
+      assert.equal((await user.request('/api/auth/login', { method: 'POST', body: { username, password: 'changed-password-123' } })).status, 200);
+    }
+    await service.stop(); service = await launch(dir);
+    for (const username of ['password-user', 'test-admin']) {
+      assert.equal((await client(service.base).request('/api/auth/login', { method: 'POST', body: { username, password: 'changed-password-123' } })).status, 200);
+    }
+  } finally { await service.stop(); await rm(dir, { recursive: true, force: true }); }
+});

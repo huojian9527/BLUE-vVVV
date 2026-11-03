@@ -127,7 +127,25 @@ try {
   await page.click('#signout');
   await page.waitForFunction(() => !document.getElementById('auth-screen').hidden);
   assert.equal(await page.$eval('#admin-new-password', el => el.value), '');
+  await login(page, 'pool-admin');
+  for (const p of [customer, page]) {
+    assert.equal(await p.$eval('#nav-chat .nav-label', el => el.textContent), '聊天');
+    assert.equal(await p.$eval('#nav-flows .nav-label', el => el.textContent), '自动化流程');
+    await p.click('#change-own-password');
+    await p.type('#own-current-password', 'wrong-password');
+    await p.type('#own-new-password', 'updated-password-123');
+    await p.type('#own-confirm-password', 'updated-password-123');
+    await p.click('#own-password-save');
+    await p.waitForFunction(() => document.getElementById('own-password-notice').textContent.includes('当前密码错误'));
+    await p.$eval('#own-current-password', el => { el.value = '123456'; });
+    await p.click('#own-password-save');
+    await p.waitForFunction(() => !document.getElementById('auth-screen').hidden);
+    assert.equal(await p.$eval('#own-current-password', el => el.value), '');
+    assert.equal(await p.$eval('#own-new-password', el => el.value), '');
+    assert.match(await p.$eval('#auth-notice', el => el.textContent), /密码已修改/);
+  }
   assert.deepEqual(errors, []);
+  console.log('PASS: labeled navigation and self-service password changes work for both customers and administrators; wrong passwords fail and successful changes require login.');
   console.log('PASS: administrator creates an ordinary user directly, sees the refreshed list and duplicate error; password clears on success and logout.');
   console.log('PASS: admin custom quota/provision/assign/reclaim UI loads no message streams; customers keep legacy numbers, cannot add numbers, and lose reclaimed chat access immediately.');
 } finally {

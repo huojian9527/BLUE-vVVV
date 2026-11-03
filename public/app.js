@@ -15,6 +15,7 @@ function showAuth() {
   const hadIdentity = Boolean(me);
   resetChatExtras(); soundEnabled = false; $('notification-sound').textContent = '开启声音'; $('notification-sound').setAttribute('aria-pressed', 'false');
   authEpoch++; clearAttachment(); closePasswordDialog();
+  closeOwnPasswordDialog();
   $('admin-create-user-form').reset(); $('admin-create-user-notice').textContent = '';
   closeStream(); accountsRequest++; creatingAccount = false; me = null; accounts = []; selectedAccount = ''; selectedThread = ''; draftPhone = ''; messages = []; connected = false; connectionStatus = 'idle';
   $('self-number').hidden = true; $('self-number').textContent = '';
@@ -368,6 +369,25 @@ $('auth-form').onsubmit = async event => {
   finally { $('auth-submit').disabled = false; }
 };
 $('signout').onclick = async () => { try { await api('/api/auth/logout', { method: 'POST' }); showAuth(); } catch (error) { notice(error.message); } };
+function closeOwnPasswordDialog() {
+  $('own-password-form').reset(); $('own-password-notice').textContent = ''; $('own-password-dialog').close();
+}
+$('change-own-password').onclick = () => { closeOwnPasswordDialog(); $('own-password-dialog').showModal(); $('own-current-password').focus(); };
+$('own-password-close').onclick = closeOwnPasswordDialog;
+$('own-password-dialog').addEventListener('cancel', event => { event.preventDefault(); closeOwnPasswordDialog(); });
+$('own-password-form').onsubmit = async event => {
+  event.preventDefault();
+  if ($('own-password-save').disabled) return;
+  if ($('own-new-password').value !== $('own-confirm-password').value) { $('own-password-notice').textContent = '两次输入的新密码不一致'; return; }
+  const epoch = authEpoch;
+  $('own-password-save').disabled = true; $('own-password-notice').textContent = '';
+  try {
+    await api('/api/auth/password', { method: 'POST', body: JSON.stringify({ currentPassword: $('own-current-password').value, password: $('own-new-password').value }) });
+    if (epoch !== authEpoch) return;
+    showAuth(); $('auth-notice').textContent = '密码已修改，请使用新密码重新登录。';
+  } catch (error) { if (epoch === authEpoch) $('own-password-notice').textContent = error.message; }
+  finally { $('own-password-save').disabled = false; }
+};
 $('account-select').onchange = () => { selectedAccount = $('account-select').value; switchAccount(); };
 $('add-account').onclick = () => { if (me?.role === 'admin') { showPage('admin'); $('admin-add-number').click(); } };
 $('remove-account').onclick = async () => {

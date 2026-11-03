@@ -98,6 +98,13 @@ app.use('/api', (req, res, next) => {
 });
 app.post('/api/auth/logout', (req, res) => { store.logout(req.sessionToken); setCookie(res, '', 0); reconcile(); res.json({ ok: true }); });
 app.get('/api/auth/me', (req, res) => res.json({ user: store.publicUser(req.user), plans }));
+app.post('/api/auth/password', async (req, res) => {
+  rate(`password-self:${req.user.id}`, 15, 900000);
+  if (typeof req.body?.currentPassword !== 'string') throw new AppError(400, '请输入当前密码');
+  await store.changePassword(req.user.id, req.user.id, req.body?.password, false, req.body.currentPassword);
+  setCookie(res, '', 0); reconcile();
+  res.json({ ok: true });
+});
 app.use('/api/admin', (req, res, next) => { if (req.user.role !== 'admin') throw new AppError(403, '仅超级管理员可操作'); next(); });
 const poolView = account => {
   const rt = runtimes.get(account.id);
