@@ -88,6 +88,8 @@ try {
   await page.setRequestInterception(false); page.off('request', pairingInterceptor);
 
   await login(customer, 'pool-customer'); await customer.waitForFunction(() => Array.from(document.getElementById('account-select').options).filter(o => o.value).length === 2);
+  await customer.waitForFunction(() => document.getElementById('my-conversation-stats').textContent.includes('今日会话：1 · 总会话：1'));
+  assert.equal(await customer.$eval('#my-conversation-stats', el => el.hidden), false);
   for (const id of ['add-account', 'open-device', 'remove-account']) assert.equal(await customer.$eval(`#${id}`, el => el.hidden), true, `legacy user control ${id} must be hidden`);
   for (const action of ['connect', 'logout']) assert.equal(await customer.evaluate(async ({ id, action }) => (await fetch(`/api/accounts/${id}/${action}`, { method: 'POST' })).status, { id: legacy.id, action }), 403);
   assert.equal(await customer.$eval('#sync-messages', el => el.hidden), false);

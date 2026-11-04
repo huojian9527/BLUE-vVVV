@@ -420,3 +420,29 @@ test('users and administrators change their own password, revoke sessions and re
     }
   } finally { await service.stop(); await rm(dir, { recursive: true, force: true }); }
 });
+
+test('employees receive only their own conversation counts in membership and account responses', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-own-stats-'));
+  const service = await launch(dir);
+  const db = new Store(dir);
+  try {
+    const admin = db.byName('test-admin');
+    const alice = await db.createUser('stats-alice', 'stats-password-123');
+    const bob = await db.createUser('stats-bob', 'stats-password-123');
+    for (const user of [alice, bob]) db.grant(admin.id, user.id, grant('basic'));
+    const a = db.createAccount(alice.id, 'Alice'), b = db.createAccount(bob.id, 'Bob');
+    db.remember(a.id, { id: 'A1', jid: '123456789@s.whatsapp.net', text: 'Private Alice', time: Date.now() });
+    db.remember(a.id, { id: 'A2', jid: '123456789@s.whatsapp.net', text: 'Private Alice again', time: Date.now() });
+    for (const [index, jid] of ['123456789', '987654321'].entries()) db.remember(b.id, { id: 'B' + index, jid: jid + '@s.whatsapp.net', text: 'Private Bob', time: Date.now() });
+    const employee = client(service.base);
+    await employee.request('/api/auth/login', { method: 'POST', body: { username: alice.username, password: 'stats-password-123' } });
+    for (const route of ['/api/auth/me', '/api/accounts?userId=' + bob.id]) {
+      const response = await employee.request(route); assert.equal(response.status, 200);
+      const result = await response.json(); assert.equal(result.user.id, alice.id);
+      assert.equal(result.user.conversations.today, 1); assert.equal(result.user.conversations.total, 1);
+      assert.equal(JSON.stringify(result).includes('Private'), false);
+      assert.equal(JSON.stringify(result).includes(bob.id), false);
+    }
+    assert.equal((await employee.request('/api/admin/users')).status, 403);
+  } finally { db.close(); await service.stop(); await rm(dir, { recursive: true, force: true }); }
+});

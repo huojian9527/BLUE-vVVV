@@ -97,7 +97,7 @@ app.use('/api', (req, res, next) => {
   next();
 });
 app.post('/api/auth/logout', (req, res) => { store.logout(req.sessionToken); setCookie(res, '', 0); reconcile(); res.json({ ok: true }); });
-app.get('/api/auth/me', (req, res) => res.json({ user: store.publicUser(req.user), plans }));
+app.get('/api/auth/me', (req, res) => res.json({ user: store.users(Date.now(), req.user.id)[0], plans }));
 app.post('/api/auth/password', async (req, res) => {
   rate(`password-self:${req.user.id}`, 15, 900000);
   if (typeof req.body?.currentPassword !== 'string') throw new AppError(400, '请输入当前密码');
@@ -256,7 +256,7 @@ app.post('/api/admin/users/:id/password', async (req, res) => {
   reconcile();
   res.json({ ok: true, ...(reset ? { password } : {}) });
 });
-app.get('/api/accounts', (req, res) => res.json({ accounts: store.accounts(req.user.id).map(a => ({ ...a, allowed: store.allowed(a), status: runtimes.get(a.id)?.state.status || 'idle', number: runtimes.get(a.id)?.state.user?.phoneNumber || '' })), user: store.publicUser(req.user) }));
+app.get('/api/accounts', (req, res) => res.json({ accounts: store.accounts(req.user.id).map(a => ({ ...a, allowed: store.allowed(a), status: runtimes.get(a.id)?.state.status || 'idle', number: runtimes.get(a.id)?.state.user?.phoneNumber || '' })), user: store.users(Date.now(), req.user.id)[0] }));
 app.post('/api/accounts', (req, res) => { throw new AppError(403, req.user.role === 'admin' ? '请在托管号码管理中添加并分配号码' : '请联系管理员分配号码，已有自有号码可继续使用'); });
 app.use('/api/accounts/:id', async (req, res, next) => {
   const account = store.account(req.params.id);

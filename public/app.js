@@ -23,7 +23,7 @@ function showAuth() {
   $('workspace').hidden = true; $('auth-screen').hidden = false;
   $('device-dialog').close(); $('qr').hidden = true; $('qr').removeAttribute('src'); $('text').value = ''; $('messages').replaceChildren();
   clearTimeout(noticeTimer);
-  for (const id of ['notice', 'current-user', 'subscription-badge', 'subscription-bar', 'quota', 'device-label', 'receiver-status', 'sync-status', 'admin-notice', 'admin-users', 'admin-audit']) $(id).replaceChildren();
+  for (const id of ['notice', 'current-user', 'subscription-badge', 'subscription-bar', 'my-conversation-stats', 'quota', 'device-label', 'receiver-status', 'sync-status', 'admin-notice', 'admin-users', 'admin-audit']) $(id).replaceChildren();
   $('user-avatar').textContent = 'U'; $('nav-admin').hidden = true;
   if (hadIdentity) { $('username').value = ''; $('password').value = ''; }
   $('chat-search').value = '';
@@ -59,6 +59,8 @@ function updateMembership(user) {
   $('subscription-badge').textContent = user.role === 'admin' ? '超级管理员' : planNames[user.plan];
   $('subscription-bar').classList.toggle('pending', !user.active);
   $('subscription-bar').textContent = user.role === 'admin' ? '超级管理员 · 在管理后台为用户开通套餐和订阅' : user.active ? `${planNames[user.plan]} · 最多 ${user.limit} 个号码 · 有效期至 ${new Date(user.expiresAt).toLocaleString()}` : '账号待开通、已停用或订阅已到期，请联系超级管理员开通使用权限。';
+  $('my-conversation-stats').hidden = user.role === 'admin';
+  $('my-conversation-stats').textContent = user.role === 'admin' ? '' : `我的会话统计 · 今日会话：${user.conversations?.today ?? 0} · 总会话：${user.conversations?.total ?? 0} · 北京时间`;
   for (const id of ['add-account', 'open-device', 'remove-account']) $(id).hidden = user.role !== 'admin';
   $('sync-messages').hidden = false;
   if (user.role !== 'admin') $('device-dialog').close();
