@@ -508,6 +508,12 @@ async function loadAdmin() {
       const strong = document.createElement('strong'); strong.textContent = user.username;
       const info = document.createElement('small'); info.textContent = `${user.role === 'admin' ? '超级管理员' : user.active ? '订阅有效' : '待开通 / 已停用 / 已到期'} · ${user.accountCount} 个号码`;
       name.append(strong, info); form.append(name);
+      if (user.role !== 'admin') {
+        const stats = document.createElement('small'); stats.className = 'conversation-stats';
+        stats.textContent = `今日会话：${user.conversations?.today ?? 0} · 总会话：${user.conversations?.total ?? 0}`;
+        stats.title = `北京时间 ${user.conversations?.date || ''}；按当前归属号码的已保存消息统计，同一号码同一客户只计一个会话。号码转交后统计归属随之变化。`;
+        name.append(stats);
+      }
       if (user.id !== me.id) {
         const passwordButton = document.createElement('button'); passwordButton.type = 'button'; passwordButton.className = 'outline'; passwordButton.textContent = '修改 / 重置密码';
         passwordButton.onclick = () => { closePasswordDialog(); passwordTarget = user.id; $('password-title').textContent = `修改密码 · ${user.username}`; $('password-dialog').showModal(); $('admin-password').focus(); };

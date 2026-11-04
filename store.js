@@ -92,7 +92,25 @@ export class Store {
     return this.db.prepare('SELECT users.* FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.hash=? AND sessions.expires_at>?').get(tokenHash(token), Date.now());
   }
   logout(token) { if (token) this.db.prepare('DELETE FROM sessions WHERE hash=?').run(tokenHash(token)); }
-  users() { return this.db.prepare('SELECT * FROM users ORDER BY created_at,id').all().map(u => this.publicUser(u)); }
+  users(now = Date.now()) {
+    const offset = 8 * 3600000, day = 86400000;
+    const start = Math.floor((now + offset) / day) * day - offset;
+    const rows = this.db.prepare(`
+      SELECT user_id, COUNT(*) AS total, SUM(active_today) AS today FROM (
+        SELECT a.user_id, a.id, json_extract(m.payload, '$.jid') AS jid,
+          MAX(CASE WHEN m.created_at >= ? AND m.created_at < ? THEN 1 ELSE 0 END) AS active_today
+        FROM accounts a JOIN messages m ON m.account_id=a.id
+        WHERE a.managed<>1 AND json_type(m.payload, '$.jid')='text' AND json_extract(m.payload, '$.jid')<>''
+        GROUP BY a.user_id, a.id, jid
+      ) GROUP BY user_id
+    `).all(start, start + day);
+    const counts = new Map(rows.map(row => [row.user_id, row]));
+    const date = new Date(start + offset).toISOString().slice(0, 10);
+    return this.db.prepare('SELECT * FROM users ORDER BY created_at,id').all().map(user => ({
+      ...this.publicUser(user),
+      conversations: { today: counts.get(user.id)?.today || 0, total: counts.get(user.id)?.total || 0, date, timeZone: 'Asia/Shanghai' }
+    }));
+  }
   grant(actor, id, grant) {
     const user = this.user(id);
     if (!user) fail(404, '用户不存在');

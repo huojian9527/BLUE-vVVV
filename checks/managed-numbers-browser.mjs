@@ -25,6 +25,8 @@ try {
   async function login(p, name) { await p.goto(base); await p.type('#username', name); await p.type('#password', '123456'); await p.click('#auth-submit'); await p.waitForFunction(() => !document.getElementById('workspace').hidden); }
   await login(page, 'pool-admin'); await page.click('#nav-admin');
   await page.waitForSelector('#admin-users input[type=number]');
+  await page.waitForSelector('#admin-users .conversation-stats');
+  assert.match(await page.$eval('#admin-users .conversation-stats', el => el.textContent), /今日会话：0 · 总会话：0/);
   // Template transfer works before the administrator owns any WhatsApp number.
   await page.waitForSelector('#admin-transfer-template option');
   await page.click('#admin-template-export'); await page.waitForSelector('#template-transfer-dialog[open]');
@@ -119,6 +121,7 @@ try {
   await page.waitForFunction(() => Array.from(document.querySelectorAll('#admin-users strong')).some(el => el.textContent === 'quick-created'));
   assert.equal(await page.$eval('#admin-new-password', el => el.value), '');
   assert.equal(store.byName('quick-created').role, 'user');
+  assert.ok(await page.$$eval('#admin-users .user-name', rows => rows.some(row => row.querySelector('strong')?.textContent === 'quick-created' && row.querySelector('.conversation-stats')?.textContent === '今日会话：0 · 总会话：0')));
   await page.type('#admin-new-username', 'quick-created');
   await page.type('#admin-new-password', 'another-password-123');
   await page.click('#admin-create-user-submit');

@@ -150,3 +150,34 @@ test('message history has no count cutoff and survives duplicate imports, reopen
     assert.deepEqual(store.messages(b.id), []);
   } finally { await runtime?.stop(); store.close(); await rm(dir, { recursive: true, force: true }); }
 });
+
+test('admin conversation statistics deduplicate per number and use Beijing day boundaries and current ownership', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-conversations-'));
+  const store = new Store(dir);
+  try {
+    await store.bootstrap('stats-admin', 'stats-password-123');
+    const admin = store.byName('stats-admin');
+    const alice = await store.createUser('stats-alice', 'stats-password-123');
+    const bob = await store.createUser('stats-bob', 'stats-password-123');
+    store.grant(admin.id, alice.id, { enabled: true, plan: 'pro', expiresAt: new Date(Date.now() + 86400000).toISOString() });
+    const a = store.createAccount(alice.id, 'One'), b = store.createAccount(alice.id, 'Two');
+    const start = Date.parse('2026-11-03T16:00:00Z'), now = start + 3600000;
+    let id = 0;
+    const add = (account, jid, time, outgoing = false) => store.remember(account.id, { id: String(++id), jid: jid + '@s.whatsapp.net', time, text: 'Private content', outgoing });
+    add(a, '123456789', start - 1);
+    add(a, '123456789', start); add(a, '123456789', start + 1, true);
+    add(a, '987654321', start - 1);
+    add(a, '111111111', start + 86400000 - 1);
+    add(a, '222222222', start + 86400000);
+    add(b, '123456789', start);
+    const stats = user => store.users(now).find(u => u.id === user.id).conversations;
+    assert.deepEqual(stats(alice), { today: 3, total: 5, date: '2026-11-04', timeZone: 'Asia/Shanghai' });
+    assert.equal(stats(bob).total, 0);
+    assert.equal(JSON.stringify(store.users(now)).includes('Private content'), false);
+    store.db.prepare('UPDATE accounts SET user_id=?,managed=2 WHERE id=?').run(bob.id, b.id);
+    assert.equal(stats(alice).total, 4); assert.equal(stats(alice).today, 2);
+    assert.equal(stats(bob).total, 1); assert.equal(stats(bob).today, 1);
+    store.db.prepare('UPDATE accounts SET managed=1 WHERE id=?').run(b.id);
+    assert.equal(stats(bob).total, 0, 'unassigned managed numbers are excluded');
+  } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
+});
