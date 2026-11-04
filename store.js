@@ -242,6 +242,10 @@ export class Store {
   }
   deleteAccount(id) { this.db.prepare('DELETE FROM accounts WHERE id=?').run(id); }
   messages(id) { return this.db.prepare('SELECT payload FROM messages WHERE account_id=? ORDER BY created_at,rowid').all(id).map(m => displayMessage(JSON.parse(m.payload))); }
+  messageSummary(id) {
+    const row = this.db.prepare('SELECT COUNT(*) AS messageCount, MIN(created_at) AS oldestMessageAt, MAX(created_at) AS newestMessageAt FROM messages WHERE account_id=?').get(id);
+    return { ...row, conversationCount: this.db.prepare("SELECT COUNT(DISTINCT json_extract(payload, '$.jid')) AS count FROM messages WHERE account_id=?").get(id).count, automaticCountLimit: null };
+  }
   contacts(account) { return this.db.prepare('SELECT jid,remark,name,phone,read_at AS readAt FROM contacts WHERE account_id=?').all(account); }
   updateContact(account, jid, fields) {
     this.db.prepare('INSERT OR IGNORE INTO contacts(account_id,jid) VALUES(?,?)').run(account, jid);

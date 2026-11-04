@@ -281,7 +281,7 @@ export class WhatsAppAccount {
     try { if (this.client?.diagnostics) engine = await Promise.race([this.client.diagnostics(), new Promise((_, reject) => { timer = setTimeout(() => reject(Error('DIAGNOSTICS_TIMEOUT')), 5000); })]); }
     catch { engine = { unavailable: 'BROWSER_UNRESPONSIVE' }; }
     finally { clearTimeout(timer); }
-    return { schema: 2, collectedAt: Date.now(), connection: this.state.status, receiver: this.receiver, sync: this.sync, engine };
+    return { schema: 2, collectedAt: Date.now(), connection: this.state.status, receiver: this.receiver, sync: this.sync, storage: this.store.messageSummary(this.account.id), engine };
   }
   async refreshMessage(id) {
     this.requireConnected();

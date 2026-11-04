@@ -950,7 +950,7 @@ $('receiver-diagnostics').onclick = async () => {
   try {
     const result = await api(`/api/accounts/${account}/diagnostics`);
     if (request !== diagnosticRequest || epoch !== authEpoch || account !== selectedAccount) return;
-    $('receiver-diagnostics-text').value = JSON.stringify(result, null, 2);
+    $('receiver-diagnostics-text').value = JSON.stringify({ ...result, page: { messageCount: messages.length, selectedConversationMessageCount: messages.filter(m => m.jid === selectedThread).length } }, null, 2);
   } catch (error) { if (request === diagnosticRequest && epoch === authEpoch && account === selectedAccount) $('receiver-diagnostics-text').value = error.message; }
 };
 $('receiver-diagnostics-copy').onclick = async () => {

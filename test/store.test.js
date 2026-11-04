@@ -132,6 +132,8 @@ test('message history has no count cutoff and survives duplicate imports, reopen
     for (const entry of entries.slice(100)) store.remember(a.id, entry);
     store.db.exec('COMMIT');
     assert.deepEqual(store.messages(a.id), entries);
+    assert.deepEqual(store.messageSummary(a.id), { messageCount: 650, conversationCount: 2, oldestMessageAt: entries[0].time, newestMessageAt: entries[649].time, automaticCountLimit: null });
+    assert.equal(store.messageSummary(b.id).messageCount, 0);
     assert.deepEqual(store.messages(b.id), []);
     store.remember(a.id, entries[0]);
     assert.equal(store.messages(a.id).length, 650);
