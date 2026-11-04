@@ -308,7 +308,6 @@ export class Store {
         }
       }
     }
-    this.db.prepare('DELETE FROM messages WHERE account_id=? AND rowid NOT IN (SELECT rowid FROM messages WHERE account_id=? ORDER BY created_at DESC,rowid DESC LIMIT 500)').run(account, account);
     return result.changes > 0 || Boolean(ackChanged);
   }
   audit() { return this.db.prepare('SELECT audit.*, users.username AS target_name FROM audit LEFT JOIN users ON users.id=audit.target ORDER BY audit.id DESC LIMIT 100').all(); }

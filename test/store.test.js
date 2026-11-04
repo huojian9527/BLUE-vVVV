@@ -115,3 +115,36 @@ test('late message enrichment replaces placeholders while preserving downloaded 
     assert.equal(store.messages(account.id).find(item => item.id === 'PLAIN').text, '完整内容');
   } finally { store.close(); await rm(dir, { recursive: true, force: true }); }
 });
+
+
+test('message history has no count cutoff and survives duplicate imports, reopen and partial sync', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'blue-history-'));
+  let store = new Store(dir), runtime;
+  try {
+    await store.bootstrap('history-admin', 'history-password-123');
+    const user = store.byName('history-admin');
+    const a = store.createAccount(user.id, 'History'), b = store.createAccount(user.id, 'Isolated');
+    const baseTime = Date.now() - 86400000;
+    const entries = Array.from({ length: 650 }, (_, i) => ({ id: 'history-' + i, messageType: 'chat', jid: (i % 2 ? '123456789' : '987654321') + '@s.whatsapp.net', text: 'Message ' + i, time: baseTime + i * 1000 }));
+    store.db.exec('BEGIN');
+    for (const entry of entries.slice(0, 100)) store.remember(a.id, entry);
+    assert.deepEqual(store.messages(a.id), entries.slice(0, 100), 'a small history is retained too');
+    for (const entry of entries.slice(100)) store.remember(a.id, entry);
+    store.db.exec('COMMIT');
+    assert.deepEqual(store.messages(a.id), entries);
+    assert.deepEqual(store.messages(b.id), []);
+    store.remember(a.id, entries[0]);
+    assert.equal(store.messages(a.id).length, 650);
+    store.close(); store = new Store(dir);
+    assert.deepEqual(store.messages(a.id), entries);
+    runtime = await new WhatsAppAccount(store.account(a.id), store, dir).init();
+    runtime.state.status = 'connected'; runtime.state.user = { id: '123456789@c.us' };
+    runtime.client = { close: async () => {}, fetchMessages: async () => ({ messages: [{ id: entries[649].id, chatId: '123456789@c.us', body: entries[649].text, timestamp: entries[649].time / 1000 }], chatCount: 1, failedChats: 0 }) };
+    await runtime.syncMessages();
+    assert.deepEqual(store.messages(a.id), entries, 'partial history imports never replace complete stored history');
+    runtime.client.fetchMessages = async () => ({ messages: [], chatCount: 0, failedChats: 0 });
+    await runtime.syncMessages();
+    assert.equal(runtime.snapshot().messages.length, 650, 'empty history imports do not clear stored messages');
+    assert.deepEqual(store.messages(b.id), []);
+  } finally { await runtime?.stop(); store.close(); await rm(dir, { recursive: true, force: true }); }
+});
