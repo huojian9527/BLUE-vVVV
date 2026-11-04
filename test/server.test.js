@@ -444,5 +444,12 @@ test('employees receive only their own conversation counts in membership and acc
       assert.equal(JSON.stringify(result).includes(bob.id), false);
     }
     assert.equal((await employee.request('/api/admin/users')).status, 403);
+    assert.equal((await client(service.base).request('/api/inbox')).status, 401);
+    const inbox = await (await employee.request('/api/inbox')).json();
+    assert.equal(inbox.accounts.length, 1); assert.equal(inbox.accounts[0].account.id, a.id);
+    assert.equal(inbox.accounts[0].messages.length, 2);
+    assert.equal(JSON.stringify(inbox).includes('Private Bob'), false);
+    db.grant(admin.id, alice.id, grant('basic', false));
+    assert.deepEqual((await (await employee.request('/api/inbox')).json()).accounts, []);
   } finally { db.close(); await service.stop(); await rm(dir, { recursive: true, force: true }); }
 });

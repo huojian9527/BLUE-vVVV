@@ -98,6 +98,11 @@ app.use('/api', (req, res, next) => {
 });
 app.post('/api/auth/logout', (req, res) => { store.logout(req.sessionToken); setCookie(res, '', 0); reconcile(); res.json({ ok: true }); });
 app.get('/api/auth/me', (req, res) => res.json({ user: store.users(Date.now(), req.user.id)[0], plans }));
+app.get('/api/inbox', (req, res) => res.json({
+  accounts: store.accounts(req.user.id).filter(account => store.allowed(account)).map(account => ({
+    account, messages: store.messages(account.id), contacts: store.contacts(account.id)
+  }))
+}));
 app.post('/api/auth/password', async (req, res) => {
   rate(`password-self:${req.user.id}`, 15, 900000);
   if (typeof req.body?.currentPassword !== 'string') throw new AppError(400, '请输入当前密码');

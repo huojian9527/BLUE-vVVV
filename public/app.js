@@ -8,6 +8,7 @@ let contacts = [], seenSnapshot = false, lastReceiverAt = 0, readMarks = new Map
 let soundEnabled = false, notificationAudio = null, lastSoundAt = 0;
 let accountsRequest = 0, creatingAccount = false;
 let realtimeCleanup = null;
+let inboxStates = new Map(), inboxRequest = 0;
 let noticeTimer, authEpoch = 0, connectionStatus = 'idle';
 function notice(text) { $('notice').textContent = text; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { $('notice').textContent = ''; }, 6000); }
 function closeStream() { realtimeCleanup?.(); realtimeCleanup = null; stream?.close(); stream = null; }
@@ -15,6 +16,7 @@ function showAuth() {
   const hadIdentity = Boolean(me);
   resetChatExtras(); soundEnabled = false; $('notification-sound').textContent = '开启声音'; $('notification-sound').setAttribute('aria-pressed', 'false');
   authEpoch++; clearAttachment(); closePasswordDialog();
+  inboxRequest++; inboxStates.clear();
   closeOwnPasswordDialog();
   $('admin-create-user-form').reset(); $('admin-create-user-notice').textContent = '';
   closeStream(); accountsRequest++; creatingAccount = false; me = null; accounts = []; selectedAccount = ''; selectedThread = ''; draftPhone = ''; messages = []; connected = false; connectionStatus = 'idle';
@@ -74,6 +76,7 @@ async function refreshAccounts(preferredId) {
   if (epoch !== authEpoch || !me || request !== accountsRequest) return false;
   if (data.user.id !== owner || data.accounts.some(account => account.user_id !== owner)) { showAuth(); $('auth-notice').textContent = '登录账号已变更，请重新登录'; return false; }
   accounts = data.accounts; updateMembership(data.user);
+  for (const id of inboxStates.keys()) if (!accounts.some(a => a.id === id && a.allowed)) inboxStates.delete(id);
   const select = $('account-select'); select.replaceChildren();
   const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = accounts.length ? '请选择号码' : '尚未添加号码'; select.append(placeholder);
   for (const account of accounts) {
@@ -90,8 +93,25 @@ async function refreshAccounts(preferredId) {
   $('remove-account').disabled = !accounts.length || Boolean(currentAccount?.managed);
   $('open-device').hidden = me?.role !== 'admin' || Boolean(currentAccount?.managed);
   $('remove-account').hidden = me?.role !== 'admin' || Boolean(currentAccount?.managed);
+  renderChats();
+  void refreshInbox();
   return true;
 }
+async function refreshInbox() {
+  if (!me) return;
+  const epoch = authEpoch, owner = me.id, request = ++inboxRequest;
+  try {
+    const data = await api('/api/inbox', { cache: 'no-store' });
+    if (epoch !== authEpoch || owner !== me?.id || request !== inboxRequest) return;
+    if (data.accounts.some(state => state.account.user_id !== owner)) return;
+    inboxStates = new Map(data.accounts.map(state => [state.account.id, state]));
+    if (selectedAccount && !inboxStates.has(selectedAccount)) {
+      selectedAccount = ''; $('account-select').value = ''; switchAccount();
+    }
+    renderChats();
+  } catch (error) { if (epoch === authEpoch && error.name !== 'StaleResponseError') notice(error.message); }
+}
+setInterval(() => { if (me && !document.hidden) void refreshInbox(); }, 2500);
 async function enter(user) {
   showAuth(); authEpoch++;
   me = user; updateMembership(user); $('auth-screen').hidden = true; $('workspace').hidden = false; $('password').value = ''; showPage('chat');
@@ -104,6 +124,8 @@ function switchAccount() {
   resetChatExtras();
   $('self-number').hidden = true; $('self-number').textContent = '';
   clearAttachment(); closeStream(); connectionStatus = 'idle'; $('connect').textContent = '连接 WhatsApp'; connected = false; selectedThread = ''; draftPhone = ''; messages = [];
+  const cached = inboxStates.get(selectedAccount);
+  if (cached) { messages = cached.messages; contacts = cached.contacts; }
   $('text').value = ''; $('qr').hidden = true; $('qr').removeAttribute('src'); document.querySelector('.qr-placeholder').hidden = false;
   $('account').textContent = ''; $('connection-hint').textContent = '点击连接生成二维码'; $('device-label').textContent = selectedAccount ? `平台账号：${me?.username || ''} · 号码备注：${accounts.find(a => a.id === selectedAccount)?.label || ''}` : ''; $('connect').disabled = !selectedAccount; $('flow-status').textContent = '未启用';
   $('send').disabled = true; $('sync-status').textContent = ''; $('receiver-status').textContent = ''; $('sync-messages').disabled = true; $('status').textContent = '未连接'; $('status').classList.remove('online'); $('device-dialog').close(); renderChats(); renderMessages();
@@ -173,6 +195,7 @@ function switchAccount() {
 }
 function renderState(state) {
   if (!me || state.account?.id !== selectedAccount || state.account?.user_id !== me.id) return;
+  inboxStates.set(selectedAccount, { account: state.account, messages: state.messages, contacts: state.contacts || [] });
   if (state.status === 'connected' && !/^[0-9]+@(s\.whatsapp\.net|c\.us|lid)$/.test(state.user?.id || '')) state = { ...state, status: 'connecting', user: null, progress: '正在核实 WhatsApp 登录身份，尚未取得当前号码…' };
   $('open-device').hidden = me?.role !== 'admin' || Boolean(state.account.managed); $('remove-account').hidden = me?.role !== 'admin' || Boolean(state.account.managed);
   connectionStatus = state.status;
@@ -214,31 +237,39 @@ function renderState(state) {
   renderChats(); renderMessages();
 }
 function threads() {
+  return accountThreads(selectedAccount, messages, contacts);
+}
+function accountThreads(accountId, items, accountContacts) {
   const map = new Map();
-  for (const message of messages) {
+  for (const message of items) {
     const previous = map.get(message.jid);
     const displayName = !message.outgoing && message.name && message.name !== message.jid ? message.name : previous?.name || message.jid.split('@')[0];
     map.set(message.jid, { jid: message.jid, name: displayName, last: message });
   }
-  if (draftPhone && selectedThread) map.set(selectedThread, map.get(selectedThread) || { jid: selectedThread, name: draftPhone, last: { text: '新会话', time: Date.now() } });
+  if (accountId === selectedAccount && draftPhone && selectedThread) map.set(selectedThread, map.get(selectedThread) || { jid: selectedThread, name: draftPhone, last: { text: '新会话', time: Date.now() } });
   return [...map.values()].map(thread => {
-    const contact = contacts.find(c => c.jid === thread.jid);
+    const contact = accountContacts.find(c => c.jid === thread.jid);
     const wsName = contact?.name || thread.name;
     const phone = contact?.phone || /^([1-9]\d{6,14})@s\.whatsapp\.net$/.exec(thread.jid)?.[1] || '';
-    const readAt = Math.max(contact?.readAt || 0, readMarks.get(thread.jid) || 0);
-    return { ...thread, wsName, name: contact?.remark || wsName, phone, remark: contact?.remark || '', unread: messages.filter(m => m.jid === thread.jid && !m.outgoing && !m.revoked && m.time > readAt).length };
+    const readAt = Math.max(contact?.readAt || 0, accountId === selectedAccount ? readMarks.get(thread.jid) || 0 : 0);
+    return { ...thread, accountId, wsName, name: contact?.remark || wsName, phone, remark: contact?.remark || '', unread: items.filter(m => m.jid === thread.jid && !m.outgoing && !m.revoked && m.time > readAt).length };
   }).sort((a, b) => b.last.time - a.last.time);
 }
 function renderChats() {
   const previousScroll = $('chat-list').scrollTop;
   const filter = $('chat-search').value.toLowerCase();
-  const list = threads().filter(t => `${t.name} ${t.wsName} ${t.phone} ${t.jid} ${t.last.text}`.toLowerCase().includes(filter));
+  const all = new Map(inboxStates);
+  if (selectedAccount && accounts.some(a => a.id === selectedAccount && a.allowed)) all.set(selectedAccount, { messages, contacts });
+  const list = [...all].filter(([id]) => accounts.some(a => a.id === id && a.allowed)).flatMap(([id, state]) => accountThreads(id, state.messages, state.contacts))
+    .sort((a, b) => b.last.time - a.last.time)
+    .filter(t => `${t.name} ${t.wsName} ${t.phone} ${t.jid} ${t.last.text} ${accounts.find(a => a.id === t.accountId)?.label || ''}`.toLowerCase().includes(filter));
   $('chat-list').replaceChildren();
   if (!list.length) {
     const empty = document.createElement('div'); empty.className = 'empty-list'; empty.textContent = !selectedAccount ? (me?.role === 'admin' ? '请在号码管理页添加并分配 WhatsApp 号码。' : '暂无可用号码，请联系管理员分配号码或检查订阅。') : '还没有会话。连接号码后接收消息，或点击 ＋ 开始新会话。'; $('chat-list').append(empty);
   }
   for (const thread of list) {
-    const button = document.createElement('button'); button.className = `chat-item${thread.jid === selectedThread ? ' active' : ''}${thread.unread ? ' has-unread' : ''}`;
+    const button = document.createElement('button'); button.className = `chat-item${thread.accountId === selectedAccount && thread.jid === selectedThread ? ' active' : ''}${thread.unread ? ' has-unread' : ''}`;
+    button.dataset.accountId = thread.accountId;
     const avatar = document.createElement('span'); avatar.className = 'avatar'; avatar.textContent = thread.name[0];
     const copy = document.createElement('span'); copy.className = 'chat-copy';
     const top = document.createElement('span'); top.className = 'chat-top';
@@ -247,9 +278,19 @@ function renderChats() {
     const preview = document.createElement('span'); preview.className = 'chat-preview'; preview.textContent = `${thread.last.outgoing ? '你：' : ''}${thread.last.text}`;
     const details = document.createElement('span'); details.className = 'chat-contact-details';
     details.textContent = `${thread.remark ? `${thread.wsName} · ` : ''}${thread.phone ? `+${thread.phone}` : thread.jid.endsWith('@g.us') ? '群聊' : '手机号待解析'}`;
+    details.textContent += ` · ${accounts.find(a => a.id === thread.accountId)?.label || 'WhatsApp 号码'}`;
     if (thread.unread) { const badge = document.createElement('span'); badge.className = 'unread-badge'; badge.textContent = thread.unread > 99 ? '99+' : String(thread.unread); badge.setAttribute('aria-label', `${thread.unread} 条未读消息`); top.append(badge); }
     top.prepend(name, time); copy.append(top, details, preview); button.append(avatar, copy);
-    button.onclick = () => { if (selectedThread !== thread.jid) clearAttachment(); selectedThread = thread.jid; $('page-chat').classList.add('chat-open'); markCurrentRead(); renderChats(); renderMessages(); };
+    button.onclick = () => {
+      if (thread.accountId !== selectedAccount) {
+        const state = inboxStates.get(thread.accountId);
+        if (!state || !accounts.some(a => a.id === thread.accountId && a.allowed)) return;
+        selectedAccount = thread.accountId; $('account-select').value = selectedAccount; switchAccount();
+        messages = state.messages; contacts = state.contacts;
+      }
+      if (selectedThread !== thread.jid) clearAttachment();
+      selectedThread = thread.jid; $('page-chat').classList.add('chat-open'); markCurrentRead(); renderChats(); renderMessages();
+    };
     $('chat-list').append(button);
   }
   $('chat-list').scrollTop = previousScroll;
