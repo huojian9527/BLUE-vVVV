@@ -453,3 +453,34 @@ test('employees receive only their own conversation counts in membership and acc
     assert.deepEqual((await (await employee.request('/api/inbox')).json()).accounts, []);
   } finally { db.close(); await service.stop(); await rm(dir, { recursive: true, force: true }); }
 });
+
+test('history API pages old messages without exposing another account or requiring a browser connection', async () => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'blue-history-api-'));
+  let store = new Store(dataDir); let service;
+  try {
+    await store.bootstrap('test-admin', 'test-password-123');
+    const alice = await store.createUser('history-alice', 'password-123'), bob = await store.createUser('history-bob', 'password-123');
+    const adminId = store.byName('test-admin').id;
+    for (const user of [alice, bob]) store.grant(adminId, user.id, grant('basic'));
+    const a = store.createAccount(alice.id, 'Alice'), b = store.createAccount(bob.id, 'Bob');
+    const jid = '123456789@s.whatsapp.net';
+    for (let i = 0; i < 250; i++) store.remember(a.id, { id: `old-${i}`, jid, text: `${i}`, time: 1 });
+    store.remember(b.id, { id: 'private', jid, text: 'Bob secret', time: 2 });
+    store.close(); store = null; service = await launch(dataDir);
+    const user = client(service.base), anonymous = client(service.base);
+    await user.request('/api/auth/login', { method: 'POST', body: { username: alice.username, password: 'password-123' } });
+    const base = `/api/accounts/${a.id}/messages?jid=${encodeURIComponent(jid)}`;
+    assert.equal((await anonymous.request(base)).status, 401);
+    assert.equal((await user.request(`/api/accounts/${b.id}/messages?jid=${encodeURIComponent(jid)}`)).status, 404);
+    const first = await (await user.request(base)).json();
+    assert.equal(first.messages.length, 100); assert.equal(first.messages[0].id, 'old-150');
+    const second = await (await user.request(`${base}&before=${first.before}`)).json();
+    assert.equal(second.messages.length, 100); assert.equal(second.messages[0].id, 'old-50');
+    const third = await (await user.request(`${base}&before=${second.before}`)).json();
+    assert.equal(third.messages.length, 50); assert.equal(third.before, null);
+    assert.equal((await user.request(`${base}&before=private`)).status, 400);
+    assert.equal((await user.request(`/api/accounts/${a.id}/messages?jid=invalid`)).status, 400);
+    assert.equal((await (await user.request(`/api/accounts/${a.id}/state`)).json()).messages.length, 200);
+    assert.equal((await user.request('/healthz')).status, 200);
+  } finally { store?.close(); await service?.stop(); await rm(dataDir, { recursive: true, force: true }); }
+});

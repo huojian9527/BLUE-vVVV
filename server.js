@@ -1,3 +1,4 @@
+import { openEvents } from './sse.js';
 import { migrateQuickReplies, quickReplyMediaDir, materializeQuickReplyAsset } from './quick-replies.js';
 import { exportTemplate, importTemplate } from './template-transfer.js';
 import express from 'express';
@@ -100,7 +101,7 @@ app.post('/api/auth/logout', (req, res) => { store.logout(req.sessionToken); set
 app.get('/api/auth/me', (req, res) => res.json({ user: store.users(Date.now(), req.user.id)[0], plans }));
 app.get('/api/inbox', (req, res) => res.json({
   accounts: store.accounts(req.user.id).filter(account => store.allowed(account)).map(account => ({
-    account, messages: store.messages(account.id), contacts: store.contacts(account.id)
+    account, messages: store.snapshotMessages(account.id), contacts: store.contacts(account.id)
   }))
 }));
 app.post('/api/auth/password', async (req, res) => {
@@ -289,14 +290,12 @@ accountRouter.delete('/', async (req, res) => {
 accountRouter.post('/sync', (req, res) => { req.runtime.requireConnected(); void req.runtime.syncMessages().catch(() => {}); res.status(202).json({ sync: req.runtime.sync }); });
 accountRouter.get('/diagnostics', async (req, res) => res.json(await req.runtime.diagnostics()));
 accountRouter.get('/state', (req, res) => res.json(req.runtime.snapshot(req.user.role)));
+accountRouter.get('/messages', (req, res) => res.json(store.messagePage(req.account.id, req.query.jid, req.query.before ?? null)));
 accountRouter.get('/events', (req, res) => {
   res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-store, no-transform', 'X-Accel-Buffering': 'no', Connection: 'keep-alive' });
   res.flushHeaders(); res.setTimeout(0); res.socket?.setKeepAlive(true, 15000);
   const rt = req.runtime; res.workspaceRole = req.user.role;
-  rt.clients.set(res, () => store.session(req.sessionToken)?.id === req.user.id && store.canAccess(req.user.id, req.account) && store.allowed(req.account));
-  res.write(`retry: 3000\ndata: ${JSON.stringify(rt.snapshot(req.user.role))}\n\n`);
-  const heartbeat = setInterval(() => res.write('event: heartbeat\ndata: {}\n\n'), 10000);
-  res.on('close', () => { clearInterval(heartbeat); rt.clients.delete(res); });
+  openEvents(rt, res, () => store.session(req.sessionToken)?.id === req.user.id && store.canAccess(req.user.id, req.account) && store.allowed(req.account));
 });
 accountRouter.post('/connect', async (req, res) => {
   if (req.user.role !== 'admin') throw new AppError(403, '仅管理员可管理号码');
@@ -315,7 +314,7 @@ accountRouter.post('/pairing', async (req, res) => {
 accountRouter.post('/logout', async (req, res) => { if (req.user.role !== 'admin') throw new AppError(403, '仅管理员可管理号码'); if (req.account.managed) throw new AppError(403, '托管号码请联系管理员管理连接'); await req.runtime.reset(); res.json({ ok: true }); });
 accountRouter.patch('/contacts', (req, res) => {
   const { jid, remark, readAt } = req.body || {};
-  if (typeof jid !== 'string' || !store.messages(req.account.id).some(m => m.jid === jid)) throw new AppError(404, '会话不存在');
+  if (typeof jid !== 'string' || !store.hasConversation(req.account.id, jid)) throw new AppError(404, '会话不存在');
   if ((remark !== undefined && (typeof remark !== 'string' || remark.length > 100)) || (readAt !== undefined && (!Number.isSafeInteger(readAt) || readAt < 0 || readAt > Date.now() + 5000)) || (remark === undefined && readAt === undefined)) throw new AppError(400, '备注最多100字，已读时间必须有效');
   const contact = store.updateContact(req.account.id, jid, { ...(remark !== undefined ? { remark: remark.trim() } : {}), ...(readAt !== undefined ? { readAt: Math.min(readAt, Date.now()) } : {}) });
   req.runtime.broadcast(); res.json({ contact });
@@ -328,7 +327,7 @@ accountRouter.post('/messages', async (req, res) => {
   if (typeof text !== 'string' || (!text.trim() && !attachment) || text.length > 4096) throw new AppError(400, '请输入消息或选择附件，文案最多 4096 字');
   let jid;
   if (selectedJid) {
-    if (typeof selectedJid !== 'string' || !/^[0-9-]+@(s\.whatsapp\.net|lid|g\.us)$/.test(selectedJid) || !store.messages(req.account.id).some(m => m.jid === selectedJid)) throw new AppError(400, '请选择当前号码下的会话');
+    if (typeof selectedJid !== 'string' || !/^[0-9-]+@(s\.whatsapp\.net|lid|g\.us)$/.test(selectedJid) || !store.hasConversation(req.account.id, selectedJid)) throw new AppError(400, '请选择当前号码下的会话');
     jid = selectedJid;
   } else { try { jid = recipientJid(phone); } catch (error) { throw new AppError(400, error.message); } }
   req.runtime.requireConnected();
@@ -340,7 +339,7 @@ accountRouter.post('/messages/:messageId/forward', async (req, res) => {
   let target;
   if (req.body?.jid) {
     target = req.body.jid;
-    if (!store.messages(req.account.id).some(m => m.jid === target)) throw new AppError(400, '请选择当前号码下的目标会话');
+    if (!store.hasConversation(req.account.id, target)) throw new AppError(400, '请选择当前号码下的目标会话');
   } else { try { target = recipientJid(req.body?.phone); } catch (error) { throw new AppError(400, error.message); } }
   res.json(await req.runtime.messageAction(req.params.messageId, 'forward', target));
 });

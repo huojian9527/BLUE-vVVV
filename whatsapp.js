@@ -1,3 +1,4 @@
+import { writeEvent, closeEvents } from './sse.js';
 import QRCode from 'qrcode';
 import { resourceSample, connectionDiagnostic, safeStartupReason } from './connection-diagnostics.js';
 import { mkdir, rm, readFile, writeFile } from 'node:fs/promises';
@@ -49,11 +50,15 @@ export class WhatsAppAccount {
     if (!this.store.allowed(this.account)) throw new AppError(403, '订阅未开通、已到期或号码超出套餐配额');
     if (!this.client || this.state.status !== 'connected' || !this.state.user?.id) throw new AppError(409, '请先扫码连接此号码');
   }
-  snapshot(role = 'admin') { return { snapshot: { source: this.snapshotSource, sequence: ++this.snapshotSequence, at: Date.now() }, ...this.state, ...(role !== 'admin' ? { qr: null, pairing: null } : {}), account: this.account, messages: this.store.messages(this.account.id), contacts: this.store.contacts(this.account.id), sync: this.sync, receiver: this.receiver, automation: { enabled: this.config.enabled, last: this.lastAutomation } }; }
+  snapshot(role = 'admin') { return { snapshot: { source: this.snapshotSource, sequence: ++this.snapshotSequence, at: Date.now() }, ...this.state, ...(role !== 'admin' ? { qr: null, pairing: null } : {}), account: this.account, messages: this.store.snapshotMessages(this.account.id), contacts: this.store.contacts(this.account.id), sync: this.sync, receiver: this.receiver, automation: { enabled: this.config.enabled, last: this.lastAutomation } }; }
   broadcast() {
+    const frames = new Map();
     for (const [response, valid] of this.clients) {
-      if (!valid()) { response.write('event: revoked\ndata: {}\n\n'); response.end(); this.clients.delete(response); continue; }
-      response.write(`data: ${JSON.stringify(this.snapshot(response.workspaceRole))}\n\n`);
+      if (response.destroyed || response.writableEnded) { closeEvents(response); this.clients.delete(response); continue; }
+      if (!valid()) { writeEvent(response, 'event: revoked\ndata: {}\n\n'); closeEvents(response); this.clients.delete(response); continue; }
+      const role = response.workspaceRole || 'admin';
+      if (!frames.has(role)) frames.set(role, `data: ${JSON.stringify(this.snapshot(role))}\n\n`);
+      if (!writeEvent(response, frames.get(role))) this.clients.delete(response);
     }
   }
   update(patch) { this.state = { ...this.state, ...patch }; this.broadcast(); }
@@ -68,7 +73,7 @@ export class WhatsAppAccount {
       const id = stanzaId(event.id), jid = typeof event.jid === 'string' ? toStoredJid(event.jid) : '';
       if (!id || !/^[0-9-]+@(s\.whatsapp\.net|lid|g\.us)$/.test(jid) || receiptAck(event.ack) === undefined) return;
       if (this.store.updateReceipt(this.account.id, id, jid, event.ack)) this.broadcast();
-      else if (!this.store.messages(this.account.id).some(m => m.id === id)) {
+      else if (!this.store.message(this.account.id, id)) {
         const key = `${jid}:${id}`; this.pendingReceipts.set(key, mergeReceipt(this.pendingReceipts.get(key), event.ack));
         if (this.pendingReceipts.size > 500) this.pendingReceipts.delete(this.pendingReceipts.keys().next().value);
       }
@@ -231,7 +236,7 @@ export class WhatsAppAccount {
     if (client) this.closing = Promise.resolve(client.close()).catch(() => {});
     this.automation?.sessions.clear();
     this.update({ status, authenticated: false, qr: null, user: null, progress: null, error: status === 'blocked' ? '订阅或套餐权限已变更' : null });
-    if (!preserveClients) { for (const response of this.clients.keys()) response.end(); this.clients.clear(); }
+    if (!preserveClients) { for (const response of this.clients.keys()) closeEvents(response); this.clients.clear(); }
     return this.closing || Promise.resolve();
   }
   async syncMessages() {
@@ -285,7 +290,7 @@ export class WhatsAppAccount {
   }
   async refreshMessage(id) {
     this.requireConnected();
-    const message = this.store.messages(this.account.id).find(item => item.id === id);
+    const message = this.store.message(this.account.id, id);
     if (!message || message.revoked) throw new AppError(404, '消息不存在或已撤回');
     const generation = this.generation;
     const sourceId = message.sourceId || `${Boolean(message.outgoing)}_${toWaJid(message.jid)}_${message.id}`;
@@ -298,11 +303,11 @@ export class WhatsAppAccount {
     if (!item || item.id !== message.id || item.jid !== message.jid || item.outgoing !== Boolean(message.outgoing) || !Number.isFinite(item.time) || item.time <= 0) throw new AppError(400, '重新读取结果不匹配，未修改原消息');
     const { selection, quotedId, history, ...repaired } = item;
     this.remember(repaired);
-    return { message: this.store.messages(this.account.id).find(item => item.id === id), recovered: item.text !== '[非文本消息]' };
+    return { message: this.store.message(this.account.id, id), recovered: item.text !== '[非文本消息]' };
   }
   downloadMessageMedia(id) {
     if (this.mediaDownloads.has(id)) return this.mediaDownloads.get(id);
-    const message = this.store.messages(this.account.id).find(item => item.id === id);
+    const message = this.store.message(this.account.id, id);
     if (!message) return Promise.reject(new AppError(404, '消息不存在'));
     if (message.attachment) return Promise.resolve(message);
     if (!message.media) return Promise.reject(new AppError(400, '此消息尚无媒体信息，请先同步消息后再试'));
@@ -344,7 +349,7 @@ export class WhatsAppAccount {
   }
   async messageAction(id, action, target) {
     this.requireConnected();
-    const message = this.store.messages(this.account.id).find(item => item.id === id);
+    const message = this.store.message(this.account.id, id);
     if (!message) throw new AppError(404, '消息不存在');
     if (message.revoked) throw new AppError(400, '消息已撤回');
     const source = message.sourceId || message.media?.sourceId || `${Boolean(message.outgoing)}_${toWaJid(message.jid)}_${message.id}`;

@@ -54,6 +54,7 @@ export class Store {
     if (!this.db.prepare('PRAGMA table_info(accounts)').all().some(c => c.name === 'managed')) this.db.exec('ALTER TABLE accounts ADD COLUMN managed INTEGER NOT NULL DEFAULT 0');
     if (!this.db.prepare('PRAGMA table_info(accounts)').all().some(c => c.name === 'storage_owner_id')) this.db.exec('ALTER TABLE accounts ADD COLUMN storage_owner_id TEXT');
     this.db.exec('UPDATE accounts SET storage_owner_id=user_id WHERE storage_owner_id IS NULL');
+    this.db.exec("CREATE INDEX IF NOT EXISTS message_time ON messages(account_id,created_at); CREATE INDEX IF NOT EXISTS message_chat_time ON messages(account_id,json_extract(payload, '$.jid'),created_at);");
   }
   user(id) { return this.db.prepare('SELECT * FROM users WHERE id=?').get(id); }
   byName(name) { return this.db.prepare('SELECT * FROM users WHERE username=?').get(name); }
@@ -259,7 +260,47 @@ export class Store {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   deleteAccount(id) { this.db.prepare('DELETE FROM accounts WHERE id=?').run(id); }
-  messages(id) { return this.db.prepare('SELECT payload FROM messages WHERE account_id=? ORDER BY created_at,rowid').all(id).map(m => displayMessage(JSON.parse(m.payload))); }
+  // Full history is retained on disk. Runtime requests use messagePage/snapshotMessages.
+  messages(id) { return Array.from(this.db.prepare('SELECT payload FROM messages WHERE account_id=? ORDER BY created_at,rowid').iterate(id), m => displayMessage(JSON.parse(m.payload))); }
+  message(account, id) {
+    const row = this.db.prepare('SELECT payload FROM messages WHERE account_id=? AND id=?').get(account, id);
+    return row ? displayMessage(JSON.parse(row.payload)) : undefined;
+  }
+  hasConversation(account, jid) {
+    return Boolean(this.db.prepare("SELECT 1 FROM messages WHERE account_id=? AND json_extract(payload, '$.jid')=? LIMIT 1").get(account, jid));
+  }
+  messagePage(account, jid, before = null, limit = 100) {
+    if (typeof jid !== 'string' || !/^[0-9-]+@(s\.whatsapp\.net|lid|g\.us)$/.test(jid)) fail(400, '会话格式无效');
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) fail(400, '每页需要1–200条消息');
+    let cursor = null;
+    if (before !== null) {
+      cursor = this.db.prepare("SELECT created_at,rowid FROM messages WHERE account_id=? AND id=? AND json_extract(payload, '$.jid')=?").get(account, before, jid);
+      if (!cursor) fail(400, '历史消息游标无效');
+    }
+    const rows = this.db.prepare(`SELECT id,payload FROM messages WHERE account_id=? AND json_extract(payload, '$.jid')=?
+      ${cursor ? 'AND (created_at < ? OR (created_at = ? AND rowid < ?))' : ''}
+      ORDER BY created_at DESC,rowid DESC LIMIT ?`).all(account, jid, ...(cursor ? [cursor.created_at, cursor.created_at, cursor.rowid] : []), limit + 1);
+    const more = rows.length > limit; if (more) rows.pop();
+    return { messages: rows.reverse().map(row => displayMessage(JSON.parse(row.payload))), before: more ? rows[0].id : null };
+  }
+  snapshotMessages(account) {
+    // Only the latest message of every conversation plus 200 recent messages.
+    // Select row IDs before loading payloads; historical media never enters JS here.
+    const messages = Array.from(this.db.prepare(`SELECT payload FROM messages WHERE rowid IN (
+      SELECT rowid FROM (SELECT rowid FROM messages WHERE account_id=? ORDER BY created_at DESC,rowid DESC LIMIT 200)
+      UNION
+      SELECT (SELECT rowid FROM messages WHERE account_id=? AND json_extract(payload, '$.jid')=chats.jid ORDER BY created_at DESC,rowid DESC LIMIT 1)
+      FROM (SELECT DISTINCT json_extract(payload, '$.jid') AS jid FROM messages WHERE account_id=?) chats
+    ) ORDER BY created_at,rowid`).iterate(account, account, account), row => displayMessage(JSON.parse(row.payload)));
+    const unread = new Map(Array.from(this.db.prepare(`SELECT json_extract(m.payload, '$.jid') AS jid, COUNT(*) AS count
+      FROM messages m LEFT JOIN contacts c ON c.account_id=m.account_id AND c.jid=json_extract(m.payload, '$.jid')
+      WHERE m.account_id=? AND NOT COALESCE(json_extract(m.payload, '$.outgoing'),0)
+        AND NOT COALESCE(json_extract(m.payload, '$.revoked'),0) AND m.created_at>COALESCE(c.read_at,0)
+      GROUP BY json_extract(m.payload, '$.jid')`).iterate(account), row => [row.jid, row.count]));
+    const latest = new Map(messages.map(message => [message.jid, message]));
+    for (const [jid, message] of latest) message.unreadCount = unread.get(jid) || 0;
+    return messages;
+  }
   messageSummary(id) {
     const row = this.db.prepare('SELECT COUNT(*) AS messageCount, MIN(created_at) AS oldestMessageAt, MAX(created_at) AS newestMessageAt FROM messages WHERE account_id=?').get(id);
     return { ...row, conversationCount: this.db.prepare("SELECT COUNT(DISTINCT json_extract(payload, '$.jid')) AS count FROM messages WHERE account_id=?").get(id).count, automaticCountLimit: null };
@@ -304,7 +345,8 @@ export class Store {
   }
   flowMenu(account, jid, nodeId, quotedId, nodes) {
     const current = nodes.find(node => node.id === nodeId);
-    for (const message of this.messages(account).reverse()) {
+    for (const row of this.db.prepare(`SELECT payload FROM messages WHERE account_id=? AND json_extract(payload, '$.jid')=? ${quotedId ? 'AND id=?' : ''} ORDER BY created_at DESC,rowid DESC`).iterate(account, jid, ...(quotedId ? [quotedId] : []))) {
+      const message = displayMessage(JSON.parse(row.payload));
       if (message.jid !== jid || !message.outgoing || !message.automatic || !message.buttons?.length || (quotedId && message.id !== quotedId)) continue;
       if (message.flow?.nodeId === nodeId) return message.flow;
       // Before menu snapshots were recorded, only reuse a menu whose complete labels still match.

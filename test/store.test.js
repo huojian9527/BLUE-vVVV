@@ -146,7 +146,8 @@ test('message history has no count cutoff and survives duplicate imports, reopen
     assert.deepEqual(store.messages(a.id), entries, 'partial history imports never replace complete stored history');
     runtime.client.fetchMessages = async () => ({ messages: [], chatCount: 0, failedChats: 0 });
     await runtime.syncMessages();
-    assert.equal(runtime.snapshot().messages.length, 650, 'empty history imports do not clear stored messages');
+    assert.equal(runtime.snapshot().messages.length, 200, 'live snapshots contain a recent window instead of the full history');
+    assert.equal(store.messages(a.id).length, 650, 'empty history imports do not clear stored messages');
     assert.deepEqual(store.messages(b.id), []);
   } finally { await runtime?.stop(); store.close(); await rm(dir, { recursive: true, force: true }); }
 });

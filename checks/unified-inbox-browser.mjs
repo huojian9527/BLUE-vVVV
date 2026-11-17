@@ -14,6 +14,7 @@ const a = store.createAccount(user.id, 'Sales One'), b = store.createAccount(use
 const foreign = store.createAccount(admin.id, 'Private admin');
 const jid = '123456789@s.whatsapp.net';
 for (const [account, text] of [[a,'A private chat'],[b,'B private chat'],[foreign,'Forbidden admin content']]) store.remember(account.id,{id:'SAME-ID',jid,text,time:Date.now()});
+for (let i = 0; i < 250; i++) store.remember(b.id, { id: `older-${i}`, jid, text: `Archived message ${i}`, time: 1000 + i });
 const service = spawn(process.execPath,['server.js'],{cwd:new URL('..',import.meta.url),env:{...process.env,DATA_DIR:dir,NODE_ENV:'development',PUBLIC_ORIGIN:'',HOST:'127.0.0.1',PORT:'0',AUTO_CONNECT:'false'},stdio:['ignore','pipe','pipe']});
 let browser;
 try {
@@ -27,6 +28,12 @@ try {
  await page.click(`[data-account-id="${b.id}"]`);
  await page.waitForFunction(id=>selectedAccount===id&&document.getElementById('messages').textContent.includes('B private chat'),{},b.id);
  assert.equal(await page.$eval('#messages',el=>el.textContent.includes('A private chat')),false);
+ assert.equal(await page.$eval('#messages',el=>el.textContent.includes('Archived message 0')),false);
+ await page.click('.load-history');
+ await page.waitForFunction(()=>document.getElementById('messages').textContent.includes('Archived message 0'));
+ assert.equal(await page.$$('.bubble').then(items=>items.length),251);
+ await page.evaluate(async()=>renderState(await workspaceApi(`/api/accounts/${selectedAccount}/state`)));
+ assert.equal(await page.$eval('#messages',el=>el.textContent.includes('Archived message 0')),true,'live snapshots preserve explicitly loaded history');
  let sendPath='';await page.setRequestInterception(true);
  page.on('request',req=>{if(new URL(req.url()).pathname.endsWith('/messages')&&req.method()==='POST'){sendPath=new URL(req.url()).pathname;void req.respond({status:200,contentType:'application/json',body:'{}'});}else void req.continue();});
  await page.evaluate(()=>{connected=true;document.getElementById('send').disabled=false;});await page.type('#text','Reply with correct number');await page.click('#send');
@@ -42,5 +49,5 @@ try {
  const response=await page.evaluate(async()=>await(await fetch('/api/inbox')).json());assert.equal(response.accounts.length,1);assert.equal(response.accounts[0].account.id,b.id);
  await page.click('#signout');await page.waitForFunction(()=>!document.getElementById('auth-screen').hidden);assert.equal(await page.$$('.chat-item').then(x=>x.length),0);
  assert.deepEqual(errors,[]);
- console.log('PASS: all owned inboxes load without selection; same customer stays isolated by number; replies use its number; background messages arrive; revoked numbers and logout clear data.');
+ console.log('PASS: paginated history loads and survives live snapshots; all owned inboxes load without selection; same customer stays isolated by number; replies use its number; background messages arrive; revoked numbers and logout clear data.');
 } finally {await browser?.close();if(service.exitCode===null){const done=once(service,'exit');service.kill('SIGTERM');await done;}store.close();await rm(dir,{recursive:true,force:true});}

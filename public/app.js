@@ -9,6 +9,30 @@ let soundEnabled = false, notificationAudio = null, lastSoundAt = 0;
 let accountsRequest = 0, creatingAccount = false;
 let realtimeCleanup = null;
 let inboxStates = new Map(), inboxRequest = 0;
+let threadHistory = null;
+function mergeThreadHistory(items) {
+  if (!threadHistory || threadHistory.account !== selectedAccount || threadHistory.jid !== selectedThread) return items;
+  const merged = new Map(threadHistory.messages.map(message => [message.id, message]));
+  for (const message of items) if (message.jid === selectedThread) merged.set(message.id, message);
+  threadHistory.messages = [...merged.values()].sort((a, b) => a.time - b.time);
+  return [...items.filter(message => message.jid !== selectedThread), ...threadHistory.messages].sort((a, b) => a.time - b.time);
+}
+async function loadThreadHistory(older = false) {
+  if (!selectedAccount || !selectedThread || !me) return;
+  const account = selectedAccount, jid = selectedThread, epoch = authEpoch;
+  if (!threadHistory || threadHistory.account !== account || threadHistory.jid !== jid) threadHistory = { account, jid, messages: [], before: null, loading: false, loaded: false };
+  const history = threadHistory;
+  if (history.loading || (older && !history.before)) return;
+  history.loading = true; renderMessages();
+  try {
+    const before = older ? history.before : messages.find(message => message.jid === jid)?.id;
+    const page = await api(`/api/accounts/${account}/messages?jid=${encodeURIComponent(jid)}${before ? `&before=${encodeURIComponent(before)}` : ''}`);
+    if (epoch !== authEpoch || threadHistory !== history || account !== selectedAccount || jid !== selectedThread) return;
+    history.messages = [...page.messages, ...history.messages]; history.before = page.before; history.loaded = true;
+    messages = mergeThreadHistory(messages);
+  } catch (error) { if (epoch === authEpoch && threadHistory === history) notice(error.message); }
+  finally { if (threadHistory === history) { history.loading = false; renderMessages(); } }
+}
 let noticeTimer, authEpoch = 0, connectionStatus = 'idle';
 function notice(text) { $('notice').textContent = text; clearTimeout(noticeTimer); noticeTimer = setTimeout(() => { $('notice').textContent = ''; }, 6000); }
 function closeStream() { realtimeCleanup?.(); realtimeCleanup = null; stream?.close(); stream = null; }
@@ -16,7 +40,7 @@ function showAuth() {
   const hadIdentity = Boolean(me);
   resetChatExtras(); soundEnabled = false; $('notification-sound').textContent = '开启声音'; $('notification-sound').setAttribute('aria-pressed', 'false');
   authEpoch++; clearAttachment(); closePasswordDialog();
-  inboxRequest++; inboxStates.clear();
+  inboxRequest++; inboxStates.clear(); threadHistory = null;
   closeOwnPasswordDialog();
   $('admin-create-user-form').reset(); $('admin-create-user-notice').textContent = '';
   closeStream(); accountsRequest++; creatingAccount = false; me = null; accounts = []; selectedAccount = ''; selectedThread = ''; draftPhone = ''; messages = []; connected = false; connectionStatus = 'idle';
@@ -119,6 +143,7 @@ async function enter(user) {
   if (!selectedAccount) window.dispatchEvent(new Event('account-changed'));
 }
 function switchAccount() {
+  threadHistory = null;
   const managed = Boolean(accounts.find(a => a.id === selectedAccount)?.managed);
   $('open-device').hidden = me?.role !== 'admin' || managed; $('remove-account').hidden = me?.role !== 'admin' || managed;
   resetChatExtras();
@@ -204,7 +229,7 @@ function renderState(state) {
   const liveArrival = seenSnapshot && (state.receiver?.lastMessageAt || 0) > lastReceiverAt && state.sync?.status !== 'syncing';
   lastReceiverAt = state.receiver?.lastMessageAt || 0; seenSnapshot = true;
   contacts = (state.contacts || []).map(c => ({ ...c, readAt: Math.max(c.readAt || 0, readMarks.get(c.jid) || 0) }));
-  connected = state.status === 'connected'; messages = state.messages;
+  connected = state.status === 'connected'; messages = mergeThreadHistory(state.messages);
   if (liveArrival && newMessages.some(m => !(m.jid === selectedThread && viewingChat()))) playNotification();
   markCurrentRead();
   $('receiver-status').textContent = !connected ? '' : state.receiver?.error || (state.receiver?.ready ? (state.receiver.lastMessageAt ? `最近收信 ${new Date(state.receiver.lastMessageAt).toLocaleTimeString()}` : '接收监听已绑定，尚未验证收信') : '消息接收初始化中…');
@@ -252,7 +277,7 @@ function accountThreads(accountId, items, accountContacts) {
     const wsName = contact?.name || thread.name;
     const phone = contact?.phone || /^([1-9]\d{6,14})@s\.whatsapp\.net$/.exec(thread.jid)?.[1] || '';
     const readAt = Math.max(contact?.readAt || 0, accountId === selectedAccount ? readMarks.get(thread.jid) || 0 : 0);
-    return { ...thread, accountId, wsName, name: contact?.remark || wsName, phone, remark: contact?.remark || '', unread: items.filter(m => m.jid === thread.jid && !m.outgoing && !m.revoked && m.time > readAt).length };
+    return { ...thread, accountId, wsName, name: contact?.remark || wsName, phone, remark: contact?.remark || '', unread: thread.last.time <= readAt ? 0 : thread.last.unreadCount ?? items.filter(m => m.jid === thread.jid && !m.outgoing && !m.revoked && m.time > readAt).length };
   }).sort((a, b) => b.last.time - a.last.time);
 }
 function renderChats() {
@@ -289,6 +314,7 @@ function renderChats() {
         messages = state.messages; contacts = state.contacts;
       }
       if (selectedThread !== thread.jid) clearAttachment();
+      if (selectedThread !== thread.jid) threadHistory = null;
       selectedThread = thread.jid; $('page-chat').classList.add('chat-open'); markCurrentRead(); renderChats(); renderMessages();
     };
     $('chat-list').append(button);
@@ -311,6 +337,12 @@ function renderMessages() {
   const previousScroll = area.scrollTop;
   const nearBottom = area.scrollHeight - area.scrollTop - area.clientHeight < 90;
   area.replaceChildren();
+  const history = threadHistory?.account === selectedAccount && threadHistory.jid === selectedThread ? threadHistory : null;
+  const more = document.createElement('button'); more.type = 'button'; more.className = 'outline load-history';
+  more.textContent = history?.loading ? '正在加载…' : '加载更早消息';
+  more.disabled = Boolean(history?.loading);
+  more.onclick = () => { void loadThreadHistory(Boolean(history?.loaded)); };
+  if (!history?.loaded || history.before) area.append(more);
   let day = '';
   for (const message of messages.filter(m => m.jid === selectedThread)) {
     const date = new Date(message.time).toLocaleDateString();
