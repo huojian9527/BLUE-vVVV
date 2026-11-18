@@ -5,7 +5,9 @@ import { AppError } from './store.js';
 export function messageSendFailure(error) {
   const text = String(error?.message || '');
   let code = 'WHATSAPP_SEND_FAILED', status = 502, message = 'WhatsApp 发送失败，请查看接收诊断中的发送错误代码';
-  if (error?.code === 'SEND_TIMEOUT' || /timeout|timed out/i.test(text)) {
+  if (/WA_LOCAL_LID_UNAVAILABLE/.test(text)) {
+    code = 'WHATSAPP_IDENTITY_UNAVAILABLE'; status = 503; message = 'WhatsApp 尚未提供当前账号的有效 LID，请重新连接号码后再试';
+  } else if (error?.code === 'SEND_TIMEOUT' || /timeout|timed out/i.test(text)) {
     code = 'WHATSAPP_SEND_TIMEOUT'; status = 504; message = 'WhatsApp 发送超时，是否送达尚未确认，请勿连续重发';
   } else if (error?.code === 'SEND_BROWSER_CLOSED' || /target closed|session closed|execution context was destroyed|browser.*disconnected/i.test(text)) {
     code = 'WHATSAPP_SEND_DISCONNECTED'; status = 503; message = 'WhatsApp 浏览器连接已失效，请等待号码重新连接后再试';

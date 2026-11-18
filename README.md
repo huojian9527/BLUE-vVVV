@@ -232,3 +232,7 @@ WA-JS `isOnline()` 读取浏览器网络状态，`isMainReady()` 是初始化事
 ### 发消息时出现通用错误
 
 WA-JS 固定为 4.8.1，包含新版 WhatsApp 消息键序列化的初始化修正。手动发送文字、图片及文件最多等待 30 秒，不自动重试；超时或未返回消息编号时不能认定未送达。发送失败现区分 `WHATSAPP_SEND_INCOMPATIBLE`（网页接口不兼容）、`WHATSAPP_SEND_DISCONNECTED`（浏览器连接失效）、`WHATSAPP_SEND_TIMEOUT`、`WHATSAPP_SEND_NO_ID` 和 `WHATSAPP_SEND_FAILED`。若提交后保存/刷新失败，提示 `SEND_RECORD_FAILED`，不要重复发送。接收诊断中的 `engine.lastSendFailure` 及服务日志包含安全错误代码、参考编号和时间，不记录消息正文、手机号或原始异常。此更新需服务重新部署、浏览器重新载入 WA-JS 后生效；不清理已保存的登录档案。真实收发仍需手机端验证。
+
+### WhatsApp 原生 LID getter 相容性
+
+WhatsApp Web `2.3000.1055074787` 的 UserPrefs 不再提供 WA-JS 4.8.1 发消息时调用的 `getMeLidUserOrThrow`。发消息前仅在该方法缺失时，使用原生 `getMaybeMeLidUser` 提供等价的非空用户 LID 读取；返回原始 Wid 实例，拒绝手机号、设备级 LID、字符串和空身份。原有严格 getter 存在时保持不变。接收诊断的 `engine.identityCompatibility.state` 表明相容层是否已安装；原生 LID 不可用时显示 `WHATSAPP_IDENTITY_UNAVAILABLE`，不伪造身份或切换成手机号发送。

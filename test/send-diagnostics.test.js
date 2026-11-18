@@ -9,7 +9,7 @@ const jid = '123456789@s.whatsapp.net';
 function client(evaluate, options = {}) {
   const logs = [], receipts = [];
   const instance = new WaJsClient({ profileDir: '/tmp/unused', onEvent: event => receipts.push(event), logSendFailure: entry => logs.push(entry), ...options });
-  instance.page = { evaluate };
+  instance.page = { evaluate: (fn, payload) => fn.name === 'installIdentityCompatibility' ? Promise.resolve({ state: 'unavailable' }) : evaluate(fn, payload) };
   return { instance, logs, receipts };
 }
 
@@ -74,4 +74,16 @@ test('compatibility failures identify missing APIs without exposing whole except
     assert.match(failure.message, /API:/);
     assert.doesNotMatch(failure.message, /secret-token|customer body/);
   }
+});
+
+
+test('a late identity preflight cannot start a send after the request has timed out', async () => {
+  let release, sends = 0;
+  const { instance } = client(async () => ({}), { sendTimeout: 20 });
+  instance.page = { evaluate: fn => fn.name === 'installIdentityCompatibility'
+    ? new Promise(resolve => { release = resolve; })
+    : (sends++, Promise.resolve({ id: 'late' })) };
+  await assert.rejects(instance.sendText(jid, 'hello'), error => error.publicCode === 'WHATSAPP_SEND_TIMEOUT');
+  release({ state: 'installed' }); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sends, 0);
 });

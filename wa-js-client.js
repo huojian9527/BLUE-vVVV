@@ -1,3 +1,4 @@
+import { installIdentityCompatibility } from './wa-identity-compat.js';
 import { messageSendFailure, sentRecordFailure } from './send-diagnostics.js';
 import { randomUUID } from 'node:crypto';
 import puppeteer from 'puppeteer-core';
@@ -429,7 +430,7 @@ export class WaJsClient {
       const ready = name => { try { return Boolean(window.WPP?.conn?.[name]?.()); } catch { return null; } };
       return { waJsVersion: version(window.WPP?.version), waWebVersion: version(window.Debug?.VERSION), mainReady: ready('isMainReady'), online: ready('isOnline'), stream: window.__blueWaStream?.() || null, bridgeInstalled: Boolean(window.__blueWaBridge), storeAvailable: Boolean(window.WPP?.whatsapp?.MsgStore), bridge: window.__blueWaDiagnostics || null };
     });
-    return { ...engine, lastSendFailure: this.lastSendFailure || null };
+    return { ...engine, identityCompatibility: this.identityCompatibility || null, lastSendFailure: this.lastSendFailure || null };
   }
   async readMessage(sourceId, jid) {
     return this.page.evaluate(async ({ sourceId, chatId }) => {
@@ -475,11 +476,17 @@ export class WaJsClient {
     }, toWaJid(jid));
   }
   async submitMessage(evaluate, payload) {
-    let timer;
+    let timer, expired = false;
     try {
       if (!this.page || this.closed) throw Object.assign(new Error('Browser closed'), { code: 'SEND_BROWSER_CLOSED' });
       const result = await Promise.race([
-        this.page.evaluate(evaluate, payload),
+        (async () => {
+          const compatibility = await this.page.evaluate(installIdentityCompatibility);
+          if (expired || this.closed) throw Object.assign(new Error('Send canceled before submission'), { code: expired ? 'SEND_TIMEOUT' : 'SEND_BROWSER_CLOSED' });
+          const state = compatibility?.state;
+          this.identityCompatibility = { state: ['native', 'installed', 'unavailable', 'missing_native_getter', 'readonly_native_module'].includes(state) ? state : 'unknown' };
+          return this.page.evaluate(evaluate, payload);
+        })(),
         new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Send timeout'), { code: 'SEND_TIMEOUT' })), this.sendTimeout); })
       ]);
       if (!stanzaId(result?.id)) throw Object.assign(new Error('Missing message ID'), { code: 'SEND_NO_ID' });
@@ -489,7 +496,7 @@ export class WaJsClient {
       this.lastSendFailure = { code: failure.publicCode, reference: randomUUID(), at: Date.now(), ...(failure.property ? { property: failure.property } : {}), ...(failure.target ? { target: failure.target } : {}) };
       this.logSendFailure({ event: 'whatsapp_send_failed', ...this.lastSendFailure });
       throw failure;
-    } finally { clearTimeout(timer); }
+    } finally { expired = true; clearTimeout(timer); }
   }
   async sentMessageId(result, jid) {
     if (Number.isInteger(result.ack)) {
