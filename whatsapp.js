@@ -29,7 +29,7 @@ export class WhatsAppAccount {
   }
   async init() {
     this.config = await loadFlows(this.flowFile);
-    this.automation = new Automation(this.config, async (jid, node, mode, contact) => {
+    this.automation = new Automation(this.config, async (jid, node, mode, contact, { signal }) => {
       this.requireConnected();
       if (/\{(?:full_name|phone_number)\}/.test(node.text)) {
         let profile = {};
@@ -37,10 +37,11 @@ export class WhatsAppAccount {
         node = { ...node, text: renderReplyText(node.text, jid, { ...contact, ...profile, name: profile.name || contact?.name, phoneNumber: profile.phoneNumber || contact?.phoneNumber }) };
       }
       const image = node.image ? await readFile(path.join(this.mediaDir, node.image)) : undefined;
+      signal.throwIfAborted();
       this.requireConnected();
       const id = await sendFlow(this.client, jid, node, mode, image, sent => {
         this.remember({ id: sent.id, jid, name: jid, text: sent.text, ...(sent.image ? { image: node.image } : {}), buttons: sent.buttons, ...(sent.buttons.length ? { flow: { nodeId: node.id, options: structuredClone(node.options) } } : {}), outgoing: true, time: Date.now(), automatic: true });
-      });
+      }, { signal });
       return id;
     }, result => { this.lastAutomation = { ...result, time: Date.now() }; this.broadcast(); }, ({ jid, quotedId, nodeId }) => this.store.flowMenu(this.account.id, jid, nodeId, quotedId, this.config.nodes));
     return this;
@@ -234,6 +235,7 @@ export class WhatsAppAccount {
     this.receiver.ready = false;
     const client = this.client; this.client = null;
     if (client) this.closing = Promise.resolve(client.close()).catch(() => {});
+    this.automation?.cancelPending();
     this.automation?.sessions.clear();
     this.update({ status, authenticated: false, qr: null, user: null, progress: null, error: status === 'blocked' ? '订阅或套餐权限已变更' : null });
     if (!preserveClients) { for (const response of this.clients.keys()) closeEvents(response); this.clients.clear(); }

@@ -47,7 +47,7 @@ test('serializes rapid replies and reports sending failures without advancing se
   const reports = [];
   const broken = new Automation(config(), async () => { throw new Error('network'); }, r => reports.push(r));
   await assert.rejects(broken.handle(event('1', 'hi')));
-  assert.equal(broken.sessions.size, 0); assert.equal(reports[0].ok, false);
+  assert.equal(broken.sessions.size, 0); assert.equal(reports.at(-1).ok, false);
 });
 test('validates graph and persists settings across reload', async () => {
   const folder = await mkdtemp(path.join(tmpdir(), 'blue-flows-'));
@@ -194,4 +194,69 @@ test('automation failures expose actionable safe diagnostics without leaking raw
   assert.match(automationError({ status: 403 }), /订阅/);
   assert.match(automationError({ status: 409 }), /连接/);
   assert.doesNotMatch(automationError(new Error('secret token')), /secret/);
+});
+
+test('a stalled send does not block other customers and times out without advancing its session', async () => {
+  let release, aborted = false;
+  const reports = [];
+  const engine = new Automation({ ...config(), mode: 'buttons', triggerMode: 'any' }, async (jid, node, mode, contact, { signal }) => {
+    if (jid.startsWith('123')) {
+      signal.addEventListener('abort', () => { aborted = true; });
+      return new Promise(resolve => { release = resolve; });
+    }
+    return 'other-customer-menu';
+  }, report => reports.push(report), () => null, { sendTimeout: 40 });
+  const first = engine.handle(event('stalled', 'hello')); const failure = assert.rejects(first, { code: 'AUTOMATION_SEND_TIMEOUT' });
+  await engine.handle(event('other', 'hello', { jid: '987654321@s.whatsapp.net' }));
+  assert.equal(engine.sessions.get('987654321@s.whatsapp.net').messageId, 'other-customer-menu');
+  await failure;
+  assert.equal(aborted, true);
+  assert.equal(engine.sessions.has('123456789@s.whatsapp.net'), false);
+  assert.match(reports.at(-1).error, /超时/);
+  release('late-result'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(engine.sessions.has('123456789@s.whatsapp.net'), false, 'late completion cannot resurrect a session');
+  assert.equal(engine.queues.size, 0);
+});
+
+test('a timed-out send releases the same customer queue and does not automatically resend it', async () => {
+  let sends = 0;
+  const engine = new Automation({ ...config(), mode: 'buttons', triggerMode: 'any' }, async () => {
+    if (++sends === 1) return new Promise(() => {});
+    return 'fresh-message-menu';
+  }, () => {}, () => null, { sendTimeout: 30 });
+  const first = assert.rejects(engine.handle(event('stuck', 'hello')), { code: 'AUTOMATION_SEND_TIMEOUT' });
+  const next = engine.handle(event('fresh', 'hello again'));
+  await Promise.all([first, next]);
+  assert.equal(sends, 2, 'one attempt per incoming message');
+  assert.equal(engine.sessions.get('123456789@s.whatsapp.net').messageId, 'fresh-message-menu');
+});
+
+test('saving a flow cancels pending work and prevents old queued events from using the new configuration', async () => {
+  let release, sends = 0;
+  const reports = [];
+  const engine = new Automation({ ...config(), triggerMode: 'any' }, async () => {
+    sends++; return new Promise(resolve => { release = resolve; });
+  }, report => reports.push(report));
+  const first = engine.handle(event('before-save', 'hello'));
+  const queued = engine.handle(event('queued-before-save', 'hello'));
+  while (!release) await Promise.resolve();
+  engine.configure({ ...config(), enabled: false });
+  await Promise.all([first, queued]);
+  release('late-menu'); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sends, 1);
+  assert.equal(engine.sessions.size, 0); assert.equal(engine.menus.size, 0);
+  assert.equal(reports.some(report => report.ok === true), false);
+});
+
+test('a late image result cannot continue with a split button menu after cancellation', async () => {
+  let release, textSends = 0; const recorded = [];
+  const controller = new AbortController();
+  const node = { ...config().nodes[0], options: [0, 1, 2].map(i => ({ label: String(i), next: 'product' })) };
+  const result = sendFlow({
+    sendImage: () => new Promise(resolve => { release = resolve; }),
+    sendText: async () => { textSends++; return 'menu'; }
+  }, '123456789@s.whatsapp.net', node, 'buttons', Buffer.from('image'), sent => recorded.push(sent), { signal: controller.signal });
+  controller.abort(); release('late-image');
+  await assert.rejects(result, { name: 'AbortError' });
+  assert.equal(textSends, 0); assert.equal(recorded.length, 0);
 });

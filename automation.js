@@ -63,6 +63,7 @@ export function renderReplyText(text, jid, contact = {}) {
   return text.replace(/\{(full_name|phone_number)\}/g, (_, key) => values[key]);
 }
 export function automationError(error) {
+  if (error?.code === 'AUTOMATION_SEND_TIMEOUT') return '自动回复发送超时，后续消息已恢复处理；本次是否送达未确认，请勿立即重复发送';
   if (error?.code === 'ENOENT') return '流程图片文件不存在，请重新上传图片并保存流程';
   if (/timeout|timed out/i.test(error?.message || '')) return '发送请求超时，请检查号码连接与 WhatsApp 网络后重试';
   if (error?.status === 403) return '订阅未开通、已到期或号码超出配额';
@@ -70,14 +71,48 @@ export function automationError(error) {
   return 'WhatsApp 发送失败，请检查号码连接；原生按钮模式可切换兼容模式验证';
 }
 export class Automation {
-  constructor(config, send, report = () => {}, resolveMenu = () => null) { this.resolveMenu = resolveMenu; this.menus = new Map(); this.config = config; this.send = send; this.report = report; this.sessions = new Map(); this.seen = new Set(); this.queue = Promise.resolve(); }
-  configure(config) { this.config = config; this.sessions.clear(); this.menus.clear(); }
+  constructor(config, send, report = () => {}, resolveMenu = () => null, { sendTimeout = 45000 } = {}) {
+    this.resolveMenu = resolveMenu; this.menus = new Map(); this.config = config; this.send = send; this.report = report;
+    this.sessions = new Map(); this.seen = new Set(); this.queues = new Map(); this.active = new Set();
+    this.generation = 0; this.sendTimeout = sendTimeout;
+  }
+  get queue() { return Promise.all([...this.queues.values()]); }
+  cancelPending() {
+    this.generation++;
+    for (const controller of this.active) controller.abort();
+    if (this.active.size) this.report({ canceled: true, node: [...this.active].at(-1).nodeName });
+  }
+  configure(config) { this.cancelPending(); this.config = config; this.sessions.clear(); this.menus.clear(); }
   handle(event) {
-    const run = this.queue.then(() => this.process(event));
-    this.queue = run.catch(() => {});
+    const generation = this.generation;
+    const previous = this.queues.get(event.jid) || Promise.resolve();
+    const run = previous.then(() => generation === this.generation ? this.process(event) : undefined);
+    const settled = run.catch(() => {});
+    this.queues.set(event.jid, settled);
+    void settled.then(() => { if (this.queues.get(event.jid) === settled) this.queues.delete(event.jid); });
     return run;
   }
-  async process({ id, jid, fromMe, text, selection, quotedId, name, phoneNumber, time = Date.now() }) {
+  async sendNode(jid, node, mode, contact) {
+    const controller = new AbortController(); controller.nodeName = node.name; this.active.add(controller);
+    let timer, aborted;
+    const deadline = new Promise((_, reject) => {
+      aborted = () => reject(Object.assign(new Error('Automation canceled'), { code: 'AUTOMATION_CANCELED' }));
+      controller.signal.addEventListener('abort', aborted, { once: true });
+      timer = setTimeout(() => {
+        // Reject as a timeout first. Abort then prevents late image/menu continuations.
+        reject(Object.assign(new Error('Automation send timeout'), { code: 'AUTOMATION_SEND_TIMEOUT' }));
+        controller.abort();
+      }, this.sendTimeout);
+    });
+    try { return await Promise.race([Promise.resolve().then(() => {
+      controller.signal.throwIfAborted();
+      return this.send(jid, node, mode, contact, { signal: controller.signal });
+    }), deadline]); }
+    finally {
+      clearTimeout(timer); controller.signal.removeEventListener('abort', aborted); this.active.delete(controller);
+    }
+  }
+  async process({ id, jid, fromMe, text, selection, quotedId, name, phoneNumber, time = Date.now() }, generation = this.generation) {
     if (!this.config.enabled || fromMe || !id || !/^[0-9]+@(s\.whatsapp\.net|lid)$/.test(jid || '') || Date.now() - time > 120000 || this.seen.has(`${jid}:${id}`)) return;
     this.seen.add(`${jid}:${id}`);
     if (this.seen.size > 5000) this.seen.delete(this.seen.values().next().value);
@@ -106,10 +141,12 @@ export class Automation {
         if (entry && (this.config.triggerMode === 'any' || entry.triggers.some(t => norm(t) === input))) node = entry;
       }
     }
-    if (!node) return;
+    if (!node || generation !== this.generation) return;
+    this.report({ pending: true, node: node.name });
     try {
       const contact = { name: name && name !== jid ? name : session?.contact?.name, phoneNumber: phoneNumber || session?.contact?.phoneNumber };
-      const messageId = await this.send(jid, node, this.config.mode, contact);
+      const messageId = await this.sendNode(jid, node, this.config.mode, contact);
+      if (generation !== this.generation) return;
       if (node.options.length && typeof messageId === 'string') {
         if (this.menus.size >= 10000) this.menus.delete(this.menus.keys().next().value);
         this.menus.set(JSON.stringify([jid, messageId]), { jid, nodeId: node.id, options: structuredClone(node.options) });
@@ -117,6 +154,9 @@ export class Automation {
       if (this.sessions.size >= 10000) this.sessions.delete(this.sessions.keys().next().value);
       this.sessions.set(jid, { node: node.id, messageId, contact, expires: Date.now() + 30 * 60000 });
       this.report({ ok: true, node: node.name });
-    } catch (error) { this.report({ ok: false, node: node.name, error: automationError(error) }); throw error; }
+    } catch (error) {
+      if (generation !== this.generation) return;
+      this.report({ ok: false, node: node.name, error: automationError(error) }); throw error;
+    }
   }
 }
