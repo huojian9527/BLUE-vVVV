@@ -63,6 +63,7 @@ export function renderReplyText(text, jid, contact = {}) {
   return text.replace(/\{(full_name|phone_number)\}/g, (_, key) => values[key]);
 }
 export function automationError(error) {
+  if (['WHATSAPP_SEND_FAILED', 'WHATSAPP_SEND_TIMEOUT', 'WHATSAPP_SEND_DISCONNECTED', 'WHATSAPP_SEND_NO_ID', 'WHATSAPP_SEND_INCOMPATIBLE', 'SEND_RECORD_FAILED'].includes(error?.publicCode)) return error.message;
   if (error?.code === 'AUTOMATION_SEND_TIMEOUT') return '自动回复发送超时，后续消息已恢复处理；本次是否送达未确认，请勿立即重复发送';
   if (error?.code === 'ENOENT') return '流程图片文件不存在，请重新上传图片并保存流程';
   if (/timeout|timed out/i.test(error?.message || '')) return '发送请求超时，请检查号码连接与 WhatsApp 网络后重试';

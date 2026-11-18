@@ -332,7 +332,7 @@ accountRouter.post('/messages', async (req, res) => {
   } else { try { jid = recipientJid(phone); } catch (error) { throw new AppError(400, error.message); } }
   req.runtime.requireConnected();
   const id = attachment ? await req.runtime.sendMedia(jid, attachment, text.trim(), voice) : await req.runtime.sendText(jid, text.trim());
-  req.runtime.remember({ id, jid, name: jid, text: text.trim() || `[${attachment?.name || '附件'}]`, ...(attachment ? { attachment } : {}), manual: true, outgoing: true, time: Date.now() });
+  req.runtime.rememberSent({ id, jid, name: jid, text: text.trim() || `[${attachment?.name || '附件'}]`, ...(attachment ? { attachment } : {}), manual: true, outgoing: true, time: Date.now() });
   res.json({ ok: true, id });
 });
 accountRouter.post('/messages/:messageId/forward', async (req, res) => {
@@ -470,7 +470,7 @@ app.use(express.static(path.join(root, 'public'), { setHeaders(res, file) { if (
 app.use((error, req, res, next) => {
   if (res.headersSent) return next(error);
   const status = error instanceof AppError ? error.status : [400, 404, 413].includes(error.status) ? error.status : 500;
-  res.status(status).json({ ...(error.code === 'SESSION_CHANGED' ? { code: error.code } : {}), error: status === 500 ? '操作失败，请检查服务存储及连接' : status === 413 ? '文件或配置超过大小限制' : status === 404 ? '资源不存在' : error.message });
+  res.status(status).json({ ...(error.code === 'SESSION_CHANGED' ? { code: error.code } : error.publicCode ? { code: error.publicCode } : {}), error: status === 500 ? '操作失败，请检查服务存储及连接' : status === 413 ? '文件或配置超过大小限制' : status === 404 ? '资源不存在' : error.message });
 });
 const server = app.listen(Number(process.env.PORT || 3000), process.env.HOST || '127.0.0.1', error => {
   if (error) { console.error(`Unable to start server: ${error.code || 'listen failed'}`); process.exit(1); }

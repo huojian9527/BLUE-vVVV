@@ -1,3 +1,4 @@
+import { sentRecordFailure } from './send-diagnostics.js';
 import { writeEvent, closeEvents } from './sse.js';
 import QRCode from 'qrcode';
 import { resourceSample, connectionDiagnostic, safeStartupReason } from './connection-diagnostics.js';
@@ -40,7 +41,7 @@ export class WhatsAppAccount {
       signal.throwIfAborted();
       this.requireConnected();
       const id = await sendFlow(this.client, jid, node, mode, image, sent => {
-        this.remember({ id: sent.id, jid, name: jid, text: sent.text, ...(sent.image ? { image: node.image } : {}), buttons: sent.buttons, ...(sent.buttons.length ? { flow: { nodeId: node.id, options: structuredClone(node.options) } } : {}), outgoing: true, time: Date.now(), automatic: true });
+        this.rememberSent({ id: sent.id, jid, name: jid, text: sent.text, ...(sent.image ? { image: node.image } : {}), buttons: sent.buttons, ...(sent.buttons.length ? { flow: { nodeId: node.id, options: structuredClone(node.options) } } : {}), outgoing: true, time: Date.now(), automatic: true });
       }, { signal });
       return id;
     }, result => { this.lastAutomation = { ...result, time: Date.now() }; this.broadcast(); }, ({ jid, quotedId, nodeId }) => this.store.flowMenu(this.account.id, jid, nodeId, quotedId, this.config.nodes));
@@ -367,6 +368,9 @@ export class WhatsAppAccount {
       void this.syncMessages().catch(() => {});
     } else throw new AppError(400, '不支持的消息操作');
     return { ok: true };
+  }
+  rememberSent(item) {
+    try { return this.remember(item); } catch { throw sentRecordFailure(); }
   }
   async sendText(jid, text) {
     this.requireConnected();

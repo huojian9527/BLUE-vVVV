@@ -14,7 +14,7 @@
     "test:browser": "node checks/wa-js-browser.mjs && node checks/template-editor-browser.mjs && node checks/account-isolation-browser.mjs && node checks/chat-features-browser.mjs && node checks/managed-numbers-browser.mjs && node checks/profile-recovery-browser.mjs && node checks/browser-resources.mjs && node checks/quick-replies-browser.mjs && node checks/realtime-browser.mjs && node checks/unified-inbox-browser.mjs"
   },
   "dependencies": {
-    "@wppconnect/wa-js": "4.7.1",
+    "@wppconnect/wa-js": "4.8.1",
     "express": "^5.1.0",
     "puppeteer-core": "25.14.0",
     "qrcode": "^1.5.4"

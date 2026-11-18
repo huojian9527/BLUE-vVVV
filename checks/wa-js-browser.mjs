@@ -12,7 +12,7 @@ try {
   await bundlePage.goto('about:blank');
   await bundlePage.addScriptTag({ path: waScript });
   const bundle = await bundlePage.evaluate(() => ({ version: window.WPP.version, text: typeof window.WPP.chat.sendTextMessage, file: typeof window.WPP.chat.sendFileMessage, qr: typeof window.WPP.conn.getAuthCode }));
-  assert.equal(bundle.version, '4.7.1'); assert.equal(bundle.text, 'function'); assert.equal(bundle.file, 'function'); assert.equal(bundle.qr, 'function');
+  assert.equal(bundle.version, '4.8.1'); assert.equal(bundle.text, 'function'); assert.equal(bundle.file, 'function'); assert.equal(bundle.qr, 'function');
   await bundlePage.close();
   const loginPage = await browser.newPage();
   const loginEvents = [];
@@ -272,5 +272,5 @@ try {
   for (let i = 0; i < 20 && !identities.some(event => event.user?.id === '888888888888888@lid'); i++) await new Promise(resolve => setTimeout(resolve, 25));
   assert.equal(identities.find(event => event.user?.id === '888888888888888@lid').user.phoneNumber, '', 'LID digits are never displayed as a phone number');
   await identityPage.close();
-  console.log('PASS: Chromium loads pinned WA-JS 4.7.1 bundle; browser bridge handles QR/status/replies and calls text/image button APIs. WhatsApp network and recipient rendering are not simulated as delivery.');
+  console.log('PASS: Chromium loads pinned WA-JS 4.8.1 bundle; browser bridge handles QR/status/replies and calls text/image button APIs. WhatsApp network and recipient rendering are not simulated as delivery.');
 } finally { await browser.close(); }

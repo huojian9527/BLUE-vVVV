@@ -1,3 +1,5 @@
+import { messageSendFailure, sentRecordFailure } from './send-diagnostics.js';
+import { randomUUID } from 'node:crypto';
 import puppeteer from 'puppeteer-core';
 import { browserResources, scheduleBrowserStart } from './browser-resources.js';
 import { launchWithProfileRecovery } from './profile-recovery.js';
@@ -292,7 +294,8 @@ export async function browserExecutable() {
   throw Object.assign(new Error('Chromium executable is unavailable'), { code: 'CHROMIUM_MISSING' });
 }
 export class WaJsClient {
-  constructor({ profileDir, onEvent, launch = options => puppeteer.launch(options) }) {
+  constructor({ profileDir, onEvent, launch = options => puppeteer.launch(options), sendTimeout = 30000, logSendFailure = detail => console.error(JSON.stringify(detail)) }) {
+    this.sendTimeout = sendTimeout; this.logSendFailure = logSendFailure;
     this.profileDir = profileDir; this.onEvent = onEvent; this.launch = launch; this.closed = false;
   }
   start() { this.starting ||= this.startBrowser(); return this.starting; }
@@ -421,11 +424,12 @@ export class WaJsClient {
     });
   }
   async diagnostics() {
-    return this.page.evaluate(() => {
+    const engine = await this.page.evaluate(() => {
       const version = value => typeof value === 'string' && /^[a-z0-9.+_-]{1,60}$/i.test(value) ? value : null;
       const ready = name => { try { return Boolean(window.WPP?.conn?.[name]?.()); } catch { return null; } };
       return { waJsVersion: version(window.WPP?.version), waWebVersion: version(window.Debug?.VERSION), mainReady: ready('isMainReady'), online: ready('isOnline'), stream: window.__blueWaStream?.() || null, bridgeInstalled: Boolean(window.__blueWaBridge), storeAvailable: Boolean(window.WPP?.whatsapp?.MsgStore), bridge: window.__blueWaDiagnostics || null };
     });
+    return { ...engine, lastSendFailure: this.lastSendFailure || null };
   }
   async readMessage(sourceId, jid) {
     return this.page.evaluate(async ({ sourceId, chatId }) => {
@@ -470,32 +474,50 @@ export class WaJsClient {
       finally { clearTimeout(timer); }
     }, toWaJid(jid));
   }
+  async submitMessage(evaluate, payload) {
+    let timer;
+    try {
+      if (!this.page || this.closed) throw Object.assign(new Error('Browser closed'), { code: 'SEND_BROWSER_CLOSED' });
+      const result = await Promise.race([
+        this.page.evaluate(evaluate, payload),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Send timeout'), { code: 'SEND_TIMEOUT' })), this.sendTimeout); })
+      ]);
+      if (!stanzaId(result?.id)) throw Object.assign(new Error('Missing message ID'), { code: 'SEND_NO_ID' });
+      return result;
+    } catch (error) {
+      const failure = messageSendFailure(error);
+      this.lastSendFailure = { code: failure.publicCode, reference: randomUUID(), at: Date.now(), ...(failure.property ? { property: failure.property } : {}) };
+      this.logSendFailure({ event: 'whatsapp_send_failed', ...this.lastSendFailure });
+      throw failure;
+    } finally { clearTimeout(timer); }
+  }
+  async sentMessageId(result, jid) {
+    if (Number.isInteger(result.ack)) {
+      try { await this.onEvent({ type: 'receipt', id: stanzaId(result.id), jid, ack: result.ack }); }
+      catch { throw sentRecordFailure(); }
+    }
+    return stanzaId(result.id);
+  }
   async sendText(jid, text, buttons = []) {
-    const result = await this.page.evaluate(async ({ to, text, buttons }) => {
+    const result = await this.submitMessage(async ({ to, text, buttons }) => {
       const result = await window.WPP.chat.sendTextMessage(to, text, { buttons: buttons.length ? buttons : undefined, detectMentioned: false, markIsRead: false, waitForAck: true });
       return { id: result.id, ack: result.ack };
     }, { to: toWaJid(jid), text, buttons });
-    if (!result?.id) throw new Error('WA-JS returned no message ID');
-    if (Number.isInteger(result.ack)) await this.onEvent({ type: 'receipt', id: stanzaId(result.id), jid, ack: result.ack });
-    return stanzaId(result.id);
+    return this.sentMessageId(result, jid);
   }
   async sendMedia(jid, data, attachment, caption, voice = false) {
-    const result = await this.page.evaluate(async ({ to, dataUrl, type, filename, mime, caption, voice }) => {
+    const result = await this.submitMessage(async ({ to, dataUrl, type, filename, mime, caption, voice }) => {
       const result = await window.WPP.chat.sendFileMessage(to, dataUrl, { type, filename, mimetype: mime, caption, ...(voice ? { isPtt: true, waveform: true } : {}), markIsRead: false, waitForAck: true });
       return { id: result.id, ack: result.ack };
     }, { to: toWaJid(jid), dataUrl: `data:${attachment.mime};base64,${data.toString('base64')}`, type: attachment.type, filename: attachment.name, mime: attachment.mime, caption, voice });
-    if (!result?.id) throw new Error('WA-JS returned no message ID');
-    if (Number.isInteger(result.ack)) await this.onEvent({ type: 'receipt', id: stanzaId(result.id), jid, ack: result.ack });
-    return stanzaId(result.id);
+    return this.sentMessageId(result, jid);
   }
   async sendImage(jid, dataUrl, caption, buttons = []) {
-    const result = await this.page.evaluate(async ({ to, dataUrl, caption, buttons }) => {
+    const result = await this.submitMessage(async ({ to, dataUrl, caption, buttons }) => {
       const result = await window.WPP.chat.sendFileMessage(to, dataUrl, { type: 'image', caption, buttons: buttons.length ? buttons : undefined, detectMentioned: false, markIsRead: false, waitForAck: true });
       return { id: result.id, ack: result.ack };
     }, { to: toWaJid(jid), dataUrl, caption, buttons });
-    if (!result?.id) throw new Error('WA-JS returned no message ID');
-    if (Number.isInteger(result.ack)) await this.onEvent({ type: 'receipt', id: stanzaId(result.id), jid, ack: result.ack });
-    return stanzaId(result.id);
+    return this.sentMessageId(result, jid);
   }
   async forwardMessage(sourceId, jid) {
     const failed = await this.page.evaluate(async ({ sourceId, to }) => {
