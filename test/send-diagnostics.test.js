@@ -60,3 +60,18 @@ test('text, image and file submissions preserve message IDs and receipt handling
   assert.equal(await instance.sendMedia(jid, Buffer.from('file'), { type: 'document', name: 'file.txt', mime: 'text/plain' }, 'caption'), 'MESSAGE');
   assert.equal(receipts.length, 3);
 });
+
+
+test('compatibility failures identify missing APIs without exposing whole exception messages', () => {
+  for (const [raw, target] of [
+    ['window.WPP.chat.sendTextMessage is not a function; customer body', 'window.WPP.chat.sendTextMessage'],
+    ['(0, a.isLidMigrated) is not a function', 'a.isLidMigrated'],
+    ['Module not found: functions.addAndSendMsgToChat', 'functions.addAndSendMsgToChat'],
+    ['WidFactory is not defined; secret-token', 'WidFactory']
+  ]) {
+    const failure = messageSendFailure(Error(raw));
+    assert.equal(failure.target, target);
+    assert.match(failure.message, /API:/);
+    assert.doesNotMatch(failure.message, /secret-token|customer body/);
+  }
+});

@@ -14,7 +14,13 @@ export function messageSendFailure(error) {
   } else if (/is not a function|is not defined|cannot read propert|module.*not.*found|MsgKey|_serialized/i.test(text)) {
     code = 'WHATSAPP_SEND_INCOMPATIBLE'; message = 'WhatsApp 网页接口发生变化，当前发送接口不兼容，请检查服务版本并重新连接号码';
   }
-  const failure = new AppError(status, `${message}（${code}）`);
+  // Extract identifier-shaped API names only, never the complete exception text.
+  const target = /\b((?:[A-Za-z_$][\w$]*\.){0,5}[A-Za-z_$][\w$]*)\)? is not a function\b/.exec(text)?.[1]
+    || /\b([A-Za-z_$][\w$]*) is not defined\b/.exec(text)?.[1]
+    || /module not found:\s*([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*){0,5})/i.exec(text)?.[1];
+  const safeTarget = target && target.length <= 100 ? target : null;
+  const failure = new AppError(status, `${message}（${code}${safeTarget ? `；API: ${safeTarget}` : ''}）`);
+  if (safeTarget) failure.target = safeTarget;
   failure.publicCode = code;
   // A property name helps identify changed APIs without logging raw exceptions.
   const property = /reading ['"]([A-Za-z_$][\w$]{0,59})['"]/.exec(text)?.[1];

@@ -486,7 +486,7 @@ export class WaJsClient {
       return result;
     } catch (error) {
       const failure = messageSendFailure(error);
-      this.lastSendFailure = { code: failure.publicCode, reference: randomUUID(), at: Date.now(), ...(failure.property ? { property: failure.property } : {}) };
+      this.lastSendFailure = { code: failure.publicCode, reference: randomUUID(), at: Date.now(), ...(failure.property ? { property: failure.property } : {}), ...(failure.target ? { target: failure.target } : {}) };
       this.logSendFailure({ event: 'whatsapp_send_failed', ...this.lastSendFailure });
       throw failure;
     } finally { clearTimeout(timer); }
